@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { asDataUrl, dataUrlToBuffer } from '../../../../lib/server-data';
 
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 const AI_BASE_URL = (process.env.AI_BASE_URL || 'https://api.openai.com').replace(/\/+$/, '');
 const AI_MODEL = process.env.AI_MODEL || 'gpt-5.4';
@@ -11,8 +11,9 @@ const AI_IMAGE_MODEL = process.env.AI_IMAGE_MODEL || 'gpt-image-2';
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const variants = await generateVariants(body);
-    return NextResponse.json({ variants });
+    const startedAt = Date.now();
+    const { variants, errors } = await generateVariants(body);
+    return NextResponse.json({ variants, errors, durationMs: Date.now() - startedAt });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'AI generation failed.' },
@@ -32,32 +33,67 @@ async function generateVariants(body: Record<string, unknown>) {
   const model = String(body.model || AI_MODEL);
   const prompt = String(body.prompt || '');
   const aspectRatio = String(body.aspectRatio || '9:16');
-  const output: Array<{ name: string; dataUrl: string; revisedPrompt?: string }> = [];
+  const startedAt = Date.now();
+  console.log(`[ai] generating ${count} variants in parallel`);
 
-  for (let index = 0; index < count; index += 1) {
-    const variantPrompt = buildVariantPrompt(prompt, index, count, aspectRatio);
-    let generated: { dataUrl: string; revisedPrompt?: string };
+  const results = await Promise.allSettled(
+    Array.from({ length: count }, (_, index) =>
+      generateOneVariant({ apiKey, model, imageDataUrl, prompt, aspectRatio, index, count }),
+    ),
+  );
 
-    try {
-      generated = await callResponsesImageGeneration({ apiKey, model, imageDataUrl, prompt: variantPrompt });
-    } catch (responsesError) {
-      generated = await callImageEditGeneration({
-        apiKey,
-        model: AI_IMAGE_MODEL,
-        imageDataUrl,
-        prompt: variantPrompt,
-        cause: responsesError instanceof Error ? responsesError : undefined,
-      });
-    }
+  const output = results
+    .map((result) => (result.status === 'fulfilled' ? result.value : null))
+    .filter((item): item is Awaited<ReturnType<typeof generateOneVariant>> => Boolean(item));
+  const errors = results
+    .map((result, index) => (result.status === 'rejected' ? `Variant ${index + 1}: ${getErrorMessage(result.reason)}` : ''))
+    .filter(Boolean);
 
-    output.push({
-      name: `ai_variant_${index + 1}.png`,
-      dataUrl: generated.dataUrl,
-      revisedPrompt: generated.revisedPrompt || '',
+  console.log(`[ai] generated ${output.length}/${count} variants in ${Date.now() - startedAt}ms`);
+  if (!output.length) throw new Error(errors.join('; ') || 'AI generation returned no images.');
+
+  return { variants: output, errors };
+}
+
+async function generateOneVariant({
+  apiKey,
+  model,
+  imageDataUrl,
+  prompt,
+  aspectRatio,
+  index,
+  count,
+}: {
+  apiKey: string;
+  model: string;
+  imageDataUrl: string;
+  prompt: string;
+  aspectRatio: string;
+  index: number;
+  count: number;
+}) {
+  const variantPrompt = buildVariantPrompt(prompt, index, count, aspectRatio);
+  const startedAt = Date.now();
+  let generated: { dataUrl: string; revisedPrompt?: string };
+
+  try {
+    generated = await callResponsesImageGeneration({ apiKey, model, imageDataUrl, prompt: variantPrompt });
+  } catch (responsesError) {
+    generated = await callImageEditGeneration({
+      apiKey,
+      model: AI_IMAGE_MODEL,
+      imageDataUrl,
+      prompt: variantPrompt,
+      cause: responsesError instanceof Error ? responsesError : undefined,
     });
   }
 
-  return output;
+  console.log(`[ai] variant ${index + 1}/${count} done in ${Date.now() - startedAt}ms`);
+  return {
+    name: `ai_variant_${index + 1}.png`,
+    dataUrl: generated.dataUrl,
+    revisedPrompt: generated.revisedPrompt || '',
+  };
 }
 
 function buildVariantPrompt(prompt: string, index: number, count: number, aspectRatio: string) {
@@ -215,4 +251,8 @@ function getNestedString(value: unknown, keys: string[]) {
     cursor = (cursor as Record<string, unknown>)[key];
   }
   return typeof cursor === 'string' ? cursor : '';
+}
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error || 'Unknown error');
 }

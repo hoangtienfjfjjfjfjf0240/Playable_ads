@@ -261,7 +261,7 @@ export function PlayableStudio() {
     }
 
     setBusy(true);
-    setNotice({ tone: 'busy', text: 'Đang gọi AI tạo 4 variant' });
+    setNotice({ tone: 'busy', text: 'AI dang tao song song 4 variant...' });
     setSources((current) =>
       current.map((source) => (source.id === activeSource.id ? { ...source, status: 'generating', error: '' } : source)),
     );
@@ -283,6 +283,8 @@ export function PlayableStudio() {
 
       const generated = (payload.variants || []).slice(0, 4) as AiVariantResponseItem[];
       if (!generated.length) throw new Error('AI không trả ảnh variant');
+      const durationSeconds = typeof payload.durationMs === 'number' ? Math.max(1, Math.round(payload.durationMs / 1000)) : null;
+      const warningCount = Array.isArray(payload.errors) ? payload.errors.length : 0;
 
       const next = await Promise.all(generated.map((item, index) => createVariantFromImage(activeSource, item, index + 1)));
       setVariants(next);
@@ -290,7 +292,10 @@ export function PlayableStudio() {
       setSources((current) =>
         current.map((source) => (source.id === activeSource.id ? { ...source, status: 'done' } : source)),
       );
-      setNotice({ tone: 'ok', text: `${next.length} variant đã tạo` });
+      setNotice({
+        tone: warningCount ? 'warn' : 'ok',
+        text: `${next.length} variant created${durationSeconds ? ` in ${durationSeconds}s` : ''}${warningCount ? `, ${warningCount} failed` : ''}`,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'AI generation failed';
       setSources((current) =>
