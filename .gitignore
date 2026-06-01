@@ -1,0 +1,7 @@
+.env.local
+node_modules/
+exports/
+.next/
+*.log
+tsconfig.tsbuildinfo
+playable-studio-preview.png
