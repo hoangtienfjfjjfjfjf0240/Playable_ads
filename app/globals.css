@@ -122,7 +122,7 @@ img {
 .section-head,
 .section-title,
 .preview-card-head,
-.timeline-head,
+.layer-dock-head,
 .tab-group,
 .status-strip,
 .field-grid,
@@ -157,7 +157,7 @@ img {
 .source-meta small,
 .recipe-card small,
 .notice span,
-.timeline-head span {
+.worker-strip {
   color: var(--muted);
   font-size: 12px;
 }
@@ -230,7 +230,7 @@ img {
 
 .sidebar-section,
 .panel-section,
-.timeline-panel,
+.layer-dock-panel,
 .preview-card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -245,8 +245,8 @@ img {
 
 .section-head,
 .section-title,
-.preview-card-head,
-.timeline-head {
+.layer-dock-head,
+.preview-card-head {
   justify-content: space-between;
   gap: 12px;
 }
@@ -822,12 +822,12 @@ img {
   object-fit: cover;
 }
 
-.timeline-panel {
+.layer-dock-panel {
   padding: 12px;
 }
 
-.timeline-head {
-  margin-bottom: 10px;
+.layer-dock-head {
+  margin-bottom: 0;
 }
 
 .tab-group {
@@ -849,54 +849,58 @@ img {
   background: var(--primary-soft);
 }
 
-.timeline-body {
-  display: grid;
-  gap: 8px;
-}
-
-.track-row {
-  display: grid;
-  grid-template-columns: 82px minmax(0, 1fr);
+.worker-strip {
+  display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
-.track-row span {
-  color: var(--muted);
+.worker-strip > b {
+  min-width: 44px;
+  height: 28px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 999px;
+  color: var(--primary-dark);
+  background: var(--primary-soft);
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 900;
 }
 
-.track-line {
-  position: relative;
-  height: 18px;
-  overflow: hidden;
+.worker-pill {
+  height: 28px;
+  min-width: 54px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
   border-radius: 999px;
+  color: var(--muted);
   background: var(--surface-container);
+  font-size: 12px;
+  font-weight: 900;
 }
 
-.clip {
-  position: absolute;
-  top: 4px;
-  height: 10px;
-  border-radius: 999px;
-  background: var(--surface-container-high);
+.worker-pill.running {
+  color: var(--primary-dark);
+  border-color: #9bbbf8;
+  background: var(--primary-soft);
 }
 
-.clip.primary {
-  background: var(--primary);
+.worker-pill.done {
+  color: var(--green);
+  border-color: #b8efd9;
+  background: #e8fff6;
 }
 
-.clip.scan {
-  background: var(--green);
-}
-
-.clip.amber {
-  background: var(--amber);
-}
-
-.clip.muted {
-  background: #aab4c5;
+.worker-pill.error {
+  color: var(--rose);
+  border-color: #ffc3d0;
+  background: var(--rose-soft);
 }
 
 .inspector-head {

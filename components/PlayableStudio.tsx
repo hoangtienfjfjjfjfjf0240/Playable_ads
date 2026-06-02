@@ -51,6 +51,7 @@ type HealthState = {
 } | null;
 
 type Notice = { tone: 'ok' | 'warn' | 'error' | 'busy'; text: string } | null;
+type AiWorkerStatus = 'idle' | 'running' | 'done' | 'error';
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, Number.isNaN(value) ? min : value));
 
@@ -92,6 +93,8 @@ export function PlayableStudio() {
   const [notice, setNotice] = useState<Notice>({ tone: 'warn', text: 'Chưa có ảnh nguồn' });
   const [busy, setBusy] = useState(false);
   const [paused, setPaused] = useState(false);
+  const [aiWorkers, setAiWorkers] = useState<AiWorkerStatus[]>(['idle', 'idle', 'idle', 'idle']);
+  const [lastAiDuration, setLastAiDuration] = useState<number | null>(null);
 
   const activeSource = useMemo(
     () => sources.find((source) => source.id === activeSourceId) || sources[0] || null,
@@ -184,6 +187,8 @@ export function PlayableStudio() {
       setActiveSourceId(imported[0].id);
       setVariants([]);
       setSelectedVariantId('');
+      setAiWorkers(['idle', 'idle', 'idle', 'idle']);
+      setLastAiDuration(null);
       setProjectSetting('name', safeFileName(imported[0].name));
       const firstImage = imported.find((source) => source.kind === 'image' && source.dataUrl);
       if (firstImage) {
@@ -248,6 +253,8 @@ export function PlayableStudio() {
       const next = await createDraftVariants(activeSource);
       setVariants(next);
       setSelectedVariantId(next[0]?.id || '');
+      setAiWorkers(['idle', 'idle', 'idle', 'idle']);
+      setLastAiDuration(null);
       setNotice({ tone: 'ok', text: 'Đã tạo 4 bản nháp từ ảnh nguồn' });
     } finally {
       setBusy(false);
@@ -261,7 +268,9 @@ export function PlayableStudio() {
     }
 
     setBusy(true);
-    setNotice({ tone: 'busy', text: 'AI dang tao song song 4 variant...' });
+    setNotice({ tone: 'busy', text: 'AI đang chạy 4 luồng tạo variant song song...' });
+    setLastAiDuration(null);
+    setAiWorkers(['running', 'running', 'running', 'running']);
     setSources((current) =>
       current.map((source) => (source.id === activeSource.id ? { ...source, status: 'generating', error: '' } : source)),
     );
@@ -285,6 +294,8 @@ export function PlayableStudio() {
       if (!generated.length) throw new Error('AI không trả ảnh variant');
       const durationSeconds = typeof payload.durationMs === 'number' ? Math.max(1, Math.round(payload.durationMs / 1000)) : null;
       const warningCount = Array.isArray(payload.errors) ? payload.errors.length : 0;
+      setLastAiDuration(durationSeconds);
+      setAiWorkers(Array.from({ length: 4 }, (_, index) => (index < generated.length ? 'done' : 'error')));
 
       const next = await Promise.all(generated.map((item, index) => createVariantFromImage(activeSource, item, index + 1)));
       setVariants(next);
@@ -294,10 +305,11 @@ export function PlayableStudio() {
       );
       setNotice({
         tone: warningCount ? 'warn' : 'ok',
-        text: `${next.length} variant created${durationSeconds ? ` in ${durationSeconds}s` : ''}${warningCount ? `, ${warningCount} failed` : ''}`,
+        text: `${next.length} variant đã tạo${durationSeconds ? ` trong ${durationSeconds}s` : ''}${warningCount ? `, lỗi ${warningCount}` : ''}`,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'AI generation failed';
+      setAiWorkers(['error', 'error', 'error', 'error']);
       setSources((current) =>
         current.map((source) =>
           source.id === activeSource.id ? { ...source, status: 'error', error: message } : source,
@@ -659,8 +671,8 @@ export function PlayableStudio() {
           )}
         </section>
 
-        <section className="timeline-panel">
-          <div className="timeline-head">
+        <section className="layer-dock-panel">
+          <div className="layer-dock-head">
             <div className="tab-group">
               <button
                 className={selectedLayer === 'hand' ? 'active' : ''}
@@ -693,13 +705,15 @@ export function PlayableStudio() {
                 CTA
               </button>
             </div>
-            <span>0:00 - 0:15</span>
-          </div>
-          <div className="timeline-body">
-            <TimelineTrack label="Creative" tone="muted" start={0} width={100} />
-            <TimelineTrack label="Scan" tone="scan" start={12} width={36} />
-            <TimelineTrack label="Hand" tone="primary" start={20} width={28} />
-            <TimelineTrack label="CTA" tone="amber" start={58} width={34} />
+            <div className="worker-strip">
+              {aiWorkers.map((status, index) => (
+                <span className={`worker-pill ${status}`} key={`${status}-${index}`}>
+                  {status === 'running' ? <Loader2 className="spin" size={13} /> : <Sparkles size={13} />}
+                  V{index + 1}
+                </span>
+              ))}
+              {lastAiDuration ? <b>{lastAiDuration}s</b> : null}
+            </div>
           </div>
         </section>
       </section>
@@ -1078,17 +1092,6 @@ function SourceState({ source }: { source: SourceItem }) {
   if (source.status === 'done') return <CheckCircle2 className="source-state ok" size={15} />;
   if (source.status === 'error') return <AlertCircle className="source-state error" size={15} />;
   return <span className="source-state idle" />;
-}
-
-function TimelineTrack({ label, tone, start, width }: { label: string; tone: string; start: number; width: number }) {
-  return (
-    <div className="track-row">
-      <span>{label}</span>
-      <div className="track-line">
-        <b className={`clip ${tone}`} style={{ left: `${start}%`, width: `${width}%` }} />
-      </div>
-    </div>
-  );
 }
 
 function layerFromHotspot(hotspot: Hotspot, index: number): LayerSettings {

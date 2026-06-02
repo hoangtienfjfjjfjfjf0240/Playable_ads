@@ -77,15 +77,20 @@ async function generateOneVariant({
   let generated: { dataUrl: string; revisedPrompt?: string };
 
   try {
-    generated = await callResponsesImageGeneration({ apiKey, model, imageDataUrl, prompt: variantPrompt });
-  } catch (responsesError) {
     generated = await callImageEditGeneration({
       apiKey,
       model: AI_IMAGE_MODEL,
       imageDataUrl,
       prompt: variantPrompt,
-      cause: responsesError instanceof Error ? responsesError : undefined,
     });
+  } catch (editError) {
+    try {
+      generated = await callResponsesImageGeneration({ apiKey, model, imageDataUrl, prompt: variantPrompt });
+    } catch (responsesError) {
+      throw new Error(
+        `${getErrorMessage(editError)}; responses fallback failed: ${getErrorMessage(responsesError)}`,
+      );
+    }
   }
 
   console.log(`[ai] variant ${index + 1}/${count} done in ${Date.now() - startedAt}ms`);
