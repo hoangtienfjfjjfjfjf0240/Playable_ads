@@ -9,6 +9,7 @@ import {
   Database,
   Download,
   Eye,
+  EyeOff,
   FileCode2,
   Grid2X2,
   Hand,
@@ -22,6 +23,7 @@ import {
   ScanLine,
   Settings2,
   Sparkles,
+  Trash2,
   Upload,
   WandSparkles,
   X,
@@ -46,6 +48,8 @@ import type {
 
 type HealthState = {
   aiConfigured: boolean;
+  openAiConfigured?: boolean;
+  geminiConfigured?: boolean;
   supabaseConfigured: boolean;
   ok: boolean;
 } | null;
@@ -65,6 +69,11 @@ const layerFieldMap: Record<LayerTarget, Array<keyof LayerSettings>> = {
   hand: ['handId', 'handMotion', 'handX', 'handY', 'handSize', 'injectHand'],
   scan: ['scanStyle', 'scanX', 'scanY', 'scanSize', 'scanSpeed', 'injectScan'],
   cta: ['ctaText', 'ctaX', 'ctaY', 'ctaWidth', 'showCta', 'buttonAnimation'],
+};
+const aiProviderModelMap: Record<ProjectSettings['aiProvider'], string> = {
+  openai: 'gpt-image-2',
+  'gemini-flash': 'gemini/gemini-3.1-flash-image-preview',
+  'gemini-pro': 'gemini/gemini-3-pro-image-preview',
 };
 
 function setLayerDragData(event: DragEvent<HTMLElement>, layer: LayerTarget) {
@@ -117,6 +126,9 @@ export function PlayableStudio() {
     [selectedVariantId, variants],
   );
   const activeLayer = selectedVariant?.settings || defaultLayerSettings;
+  const activeAiReady =
+    settings.aiProvider === 'openai' ? Boolean(health?.openAiConfigured) : Boolean(health?.geminiConfigured);
+  const activeAiLabel = settings.aiProvider === 'openai' ? 'GPT' : 'Gemini';
 
   const refreshHealth = useCallback(() => {
     let cancelled = false;
@@ -300,6 +312,8 @@ export function PlayableStudio() {
           imageDataUrl: activeSource.dataUrl,
           prompt: settings.prompt,
           count: 4,
+          provider: settings.aiProvider,
+          model: aiProviderModelMap[settings.aiProvider],
           aspectRatio: settings.orientation === 'landscape' ? '16:9' : '9:16',
         }),
       });
@@ -505,6 +519,36 @@ export function PlayableStudio() {
     }
   };
 
+  const removeSelectedLayer = () => {
+    if (!selectedVariant) return;
+    const patch =
+      selectedLayer === 'hand'
+        ? ({ injectHand: false } satisfies Partial<LayerSettings>)
+        : selectedLayer === 'scan'
+          ? ({ injectScan: false } satisfies Partial<LayerSettings>)
+          : ({ showCta: false } satisfies Partial<LayerSettings>);
+
+    setVariants((current) =>
+      current.map((variant) =>
+        variant.id === selectedVariant.id ? { ...variant, settings: { ...variant.settings, ...patch } } : variant,
+      ),
+    );
+    setNotice({ tone: 'ok', text: `Removed ${selectedLayer} from Variant ${selectedVariant.index}` });
+  };
+
+  const deleteSelectedVariant = () => {
+    if (!selectedVariant) return;
+    const targetIndex = variants.findIndex((variant) => variant.id === selectedVariant.id);
+    const next = variants
+      .filter((variant) => variant.id !== selectedVariant.id)
+      .map((variant, index) => ({ ...variant, index: index + 1 }));
+    const nextSelected = next[Math.min(Math.max(targetIndex, 0), next.length - 1)] || next[0] || null;
+
+    setVariants(next);
+    setSelectedVariantId(nextSelected?.id || '');
+    setNotice({ tone: 'ok', text: `Deleted Variant ${selectedVariant.index}` });
+  };
+
   const layerForControls = selectedVariant?.settings || defaultLayerSettings;
 
   const moveLayer = useCallback(
@@ -532,7 +576,7 @@ export function PlayableStudio() {
         </div>
 
         <div className="status-strip">
-          <StatusPill icon={<WandSparkles size={14} />} label="AI" ready={Boolean(health?.aiConfigured)} loading={!health} />
+          <StatusPill icon={<WandSparkles size={14} />} label={activeAiLabel} ready={activeAiReady} loading={!health} />
           <StatusPill icon={<Database size={14} />} label="DB" ready={Boolean(health?.supabaseConfigured)} loading={!health} />
         </div>
 
@@ -650,7 +694,7 @@ export function PlayableStudio() {
               <Crosshair size={16} />
               Detect
             </button>
-            <button className="primary-button" type="button" onClick={generateVariants} disabled={!activeSource || activeSource.kind !== 'image' || busy}>
+            <button className="primary-button" type="button" onClick={generateVariants} disabled={!activeSource || activeSource.kind !== 'image' || busy || !activeAiReady}>
               {busy ? <Loader2 className="spin" size={16} /> : <WandSparkles size={16} />}
               Generate 4
             </button>
@@ -759,6 +803,19 @@ export function PlayableStudio() {
           </label>
           <div className="field-grid">
             <label className="field">
+              <span>AI model</span>
+              <select value={settings.aiProvider} onChange={(event) => setProjectSetting('aiProvider', event.target.value as ProjectSettings['aiProvider'])}>
+                <option value="gemini-flash">Gemini 3.1 Flash Image</option>
+                <option value="gemini-pro">Gemini 3 Pro Image</option>
+                <option value="openai">GPT Image</option>
+              </select>
+            </label>
+            {!activeAiReady && health && (
+              <div className="field-status warn">
+                Missing AI_API_KEY
+              </div>
+            )}
+            <label className="field">
               <span>Network</span>
               <select value={settings.network} onChange={(event) => setProjectSetting('network', event.target.value as ProjectSettings['network'])}>
                 <option value="applovin">Applovin</option>
@@ -766,6 +823,8 @@ export function PlayableStudio() {
                 <option value="mraid">Generic MRAID</option>
               </select>
             </label>
+          </div>
+          <div className="field-grid">
             <label className="field">
               <span>Mode</span>
               <select value={settings.orientation} onChange={(event) => setProjectSetting('orientation', event.target.value as ProjectSettings['orientation'])}>
@@ -896,6 +955,17 @@ export function PlayableStudio() {
               </label>
             </div>
           )}
+
+          <div className="layer-actions">
+            <button className="secondary-button wide" type="button" onClick={removeSelectedLayer} disabled={!selectedVariant}>
+              <EyeOff size={16} />
+              Remove Layer
+            </button>
+            <button className="danger-button wide" type="button" onClick={deleteSelectedVariant} disabled={!selectedVariant}>
+              <Trash2 size={16} />
+              Delete Variant
+            </button>
+          </div>
         </section>
 
         <section className="panel-section">

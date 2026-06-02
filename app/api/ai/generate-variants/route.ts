@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { asDataUrl, dataUrlToBuffer } from '../../../../lib/server-data';
+import type { AiProvider } from '../../../../lib/types';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -7,6 +8,9 @@ export const maxDuration = 300;
 const AI_BASE_URL = (process.env.AI_BASE_URL || 'https://api.openai.com').replace(/\/+$/, '');
 const AI_MODEL = process.env.AI_MODEL || 'gpt-5.4';
 const AI_IMAGE_MODEL = process.env.AI_IMAGE_MODEL || 'gpt-image-2';
+const GEMINI_FLASH_IMAGE_MODEL = process.env.GEMINI_FLASH_IMAGE_MODEL || 'gemini/gemini-3.1-flash-image-preview';
+const GEMINI_PRO_IMAGE_MODEL = process.env.GEMINI_PRO_IMAGE_MODEL || 'gemini/gemini-3-pro-image-preview';
+const GEMINI_FALLBACK_IMAGE_MODEL = process.env.GEMINI_FALLBACK_IMAGE_MODEL || 'gemini/gemini-2.5-flash-image';
 
 export async function POST(request: Request) {
   try {
@@ -23,6 +27,7 @@ export async function POST(request: Request) {
 }
 
 async function generateVariants(body: Record<string, unknown>) {
+  const provider = parseAiProvider(body.provider);
   const apiKey = process.env.AI_API_KEY || process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error('AI_API_KEY is not configured on the server.');
 
@@ -30,15 +35,15 @@ async function generateVariants(body: Record<string, unknown>) {
   if (!imageDataUrl.startsWith('data:image/')) throw new Error('A base64 image data URL is required.');
 
   const count = Math.max(1, Math.min(4, Number(body.count || 4)));
-  const model = String(body.model || AI_MODEL);
+  const model = String(body.model || getDefaultModel(provider));
   const prompt = String(body.prompt || '');
   const aspectRatio = String(body.aspectRatio || '9:16');
   const startedAt = Date.now();
-  console.log(`[ai] generating ${count} variants in parallel`);
+  console.log(`[ai] generating ${count} variants in parallel with ${provider}:${model}`);
 
   const results = await Promise.allSettled(
     Array.from({ length: count }, (_, index) =>
-      generateOneVariant({ apiKey, model, imageDataUrl, prompt, aspectRatio, index, count }),
+      generateOneVariant({ apiKey, provider, model, imageDataUrl, prompt, aspectRatio, index, count }),
     ),
   );
 
@@ -57,6 +62,7 @@ async function generateVariants(body: Record<string, unknown>) {
 
 async function generateOneVariant({
   apiKey,
+  provider,
   model,
   imageDataUrl,
   prompt,
@@ -65,6 +71,7 @@ async function generateOneVariant({
   count,
 }: {
   apiKey: string;
+  provider: AiProvider;
   model: string;
   imageDataUrl: string;
   prompt: string;
@@ -79,17 +86,32 @@ async function generateOneVariant({
   try {
     generated = await callImageEditGeneration({
       apiKey,
-      model: AI_IMAGE_MODEL,
+      model: provider === 'openai' ? AI_IMAGE_MODEL : model,
       imageDataUrl,
       prompt: variantPrompt,
     });
   } catch (editError) {
-    try {
-      generated = await callResponsesImageGeneration({ apiKey, model, imageDataUrl, prompt: variantPrompt });
-    } catch (responsesError) {
-      throw new Error(
-        `${getErrorMessage(editError)}; responses fallback failed: ${getErrorMessage(responsesError)}`,
-      );
+    if (provider !== 'openai' && model !== GEMINI_FALLBACK_IMAGE_MODEL) {
+      try {
+        generated = await callImageEditGeneration({
+          apiKey,
+          model: GEMINI_FALLBACK_IMAGE_MODEL,
+          imageDataUrl,
+          prompt: variantPrompt,
+          cause: editError instanceof Error ? editError : undefined,
+        });
+        console.log(`[ai] variant ${index + 1}/${count} used fallback ${GEMINI_FALLBACK_IMAGE_MODEL}`);
+      } catch (fallbackError) {
+        throw new Error(`${getErrorMessage(editError)}; gemini fallback failed: ${getErrorMessage(fallbackError)}`);
+      }
+    } else {
+      try {
+        generated = await callResponsesImageGeneration({ apiKey, model, imageDataUrl, prompt: variantPrompt });
+      } catch (responsesError) {
+        throw new Error(
+          `${getErrorMessage(editError)}; responses fallback failed: ${getErrorMessage(responsesError)}`,
+        );
+      }
     }
   }
 
@@ -99,6 +121,16 @@ async function generateOneVariant({
     dataUrl: generated.dataUrl,
     revisedPrompt: generated.revisedPrompt || '',
   };
+}
+
+function parseAiProvider(value: unknown): AiProvider {
+  return value === 'gemini-flash' || value === 'gemini-pro' || value === 'openai' ? value : 'openai';
+}
+
+function getDefaultModel(provider: AiProvider) {
+  if (provider === 'gemini-flash') return GEMINI_FLASH_IMAGE_MODEL;
+  if (provider === 'gemini-pro') return GEMINI_PRO_IMAGE_MODEL;
+  return AI_MODEL;
 }
 
 function buildVariantPrompt(prompt: string, index: number, count: number, aspectRatio: string) {

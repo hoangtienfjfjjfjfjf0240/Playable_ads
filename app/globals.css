@@ -447,6 +447,7 @@ img {
 .primary-button,
 .secondary-button,
 .ghost-button,
+.danger-button,
 .icon-button,
 .tab-group button,
 .segmented-row button {
@@ -485,6 +486,18 @@ img {
 .ghost-button:hover:not(:disabled) {
   border-color: #adc2e9;
   background: var(--primary-soft);
+}
+
+.danger-button {
+  border: 1px solid #ffc3d0;
+  padding: 0 13px;
+  color: var(--rose);
+  background: var(--rose-soft);
+}
+
+.danger-button:hover:not(:disabled) {
+  border-color: var(--rose);
+  background: #ffd5df;
 }
 
 .ghost-button {
@@ -963,6 +976,25 @@ img {
   flex: 1;
 }
 
+.field-status {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 900;
+  text-align: center;
+}
+
+.field-status.warn {
+  color: #a45d00;
+  border-color: #fde5a8;
+  background: var(--amber-soft);
+}
+
 .check-row {
   display: flex;
   align-items: center;
@@ -991,6 +1023,12 @@ img {
 .control-stack {
   display: grid;
   gap: 12px;
+}
+
+.layer-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .number-control {

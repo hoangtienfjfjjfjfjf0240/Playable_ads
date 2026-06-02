@@ -6,6 +6,8 @@ export type NetworkTarget = 'applovin' | 'mintegral' | 'mraid';
 
 export type Orientation = 'portrait' | 'landscape';
 
+export type AiProvider = 'openai' | 'gemini-flash' | 'gemini-pro';
+
 export type HandMotion =
   | 'tap'
   | 'doubleTap'
@@ -68,6 +70,7 @@ export interface ProjectSettings {
   storeUrl: string;
   network: NetworkTarget;
   orientation: Orientation;
+  aiProvider: AiProvider;
   useClickTag: boolean;
   replaceLinks: boolean;
   ctaSelector: string;

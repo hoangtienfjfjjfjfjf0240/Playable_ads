@@ -31,6 +31,7 @@ export function createDefaultProjectSettings(): ProjectSettings {
     storeUrl: 'https://apps.apple.com/us/app/icardiac-heart-rate-health/id6468660073',
     network: 'applovin',
     orientation: 'portrait',
+    aiProvider: 'gemini-flash',
     useClickTag: true,
     replaceLinks: true,
     ctaSelector: "button,[role='button'],.cta,.btn",

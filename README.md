@@ -23,6 +23,9 @@ AI_BASE_URL=
 AI_API_KEY=
 AI_MODEL=gpt-5.4
 AI_IMAGE_MODEL=gpt-image-2
+GEMINI_FLASH_IMAGE_MODEL=gemini/gemini-3.1-flash-image-preview
+GEMINI_PRO_IMAGE_MODEL=gemini/gemini-3-pro-image-preview
+GEMINI_FALLBACK_IMAGE_MODEL=gemini/gemini-2.5-flash-image
 ```
 
 ## Supabase
