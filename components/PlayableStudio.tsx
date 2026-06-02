@@ -61,6 +61,11 @@ const uid = () => {
 };
 
 const LAYER_DRAG_TYPE = 'application/x-playable-layer';
+const layerFieldMap: Record<LayerTarget, Array<keyof LayerSettings>> = {
+  hand: ['handId', 'handMotion', 'handX', 'handY', 'handSize', 'injectHand'],
+  scan: ['scanStyle', 'scanX', 'scanY', 'scanSize', 'scanSpeed', 'injectScan'],
+  cta: ['ctaText', 'ctaX', 'ctaY', 'ctaWidth', 'showCta', 'buttonAnimation'],
+};
 
 function setLayerDragData(event: DragEvent<HTMLElement>, layer: LayerTarget) {
   event.dataTransfer.setData(LAYER_DRAG_TYPE, layer);
@@ -78,6 +83,13 @@ function getPointInElement(element: HTMLElement, clientX: number, clientY: numbe
     x: Math.round(clamp(((clientX - rect.left) / rect.width) * 100, 0, 100)),
     y: Math.round(clamp(((clientY - rect.top) / rect.height) * 100, 0, 100)),
   };
+}
+
+function scopeLayerPatch(partial: Partial<LayerSettings>, layer: LayerTarget) {
+  const allowed = new Set(layerFieldMap[layer]);
+  return Object.fromEntries(
+    Object.entries(partial).filter(([key]) => allowed.has(key as keyof LayerSettings)),
+  ) as Partial<LayerSettings>;
 }
 
 export function PlayableStudio() {
@@ -130,15 +142,20 @@ export function PlayableStudio() {
   };
 
   const updateLayer = useCallback(
-    (partial: Partial<LayerSettings>, targetVariantId = selectedVariant?.id) => {
+    (partial: Partial<LayerSettings>, targetVariantId = selectedVariant?.id, layerTarget = selectedLayer) => {
+      const targetId = targetVariantId || selectedVariant?.id || '';
+      const sharedPartial = scopeLayerPatch(partial, layerTarget);
+      const hasSharedChanges = Object.keys(sharedPartial).length > 0;
+
       setVariants((current) =>
         current.map((variant) => {
-          if (!settings.syncAllVariants && variant.id !== targetVariantId) return variant;
-          return { ...variant, settings: { ...variant.settings, ...partial } };
+          if (variant.id === targetId) return { ...variant, settings: { ...variant.settings, ...partial } };
+          if (!settings.syncAllVariants || !hasSharedChanges) return variant;
+          return { ...variant, settings: { ...variant.settings, ...sharedPartial } };
         }),
       );
     },
-    [selectedVariant?.id, settings.syncAllVariants],
+    [selectedLayer, selectedVariant?.id, settings.syncAllVariants],
   );
 
   const importFiles = async (files: FileList | File[]) => {
@@ -494,9 +511,9 @@ export function PlayableStudio() {
     (variantId: string, layer: LayerTarget, x: number, y: number) => {
       setSelectedVariantId(variantId);
       setSelectedLayer(layer);
-      if (layer === 'hand') updateLayer({ handX: x, handY: y, injectHand: true }, variantId);
-      if (layer === 'scan') updateLayer({ scanX: x, scanY: y, injectScan: true }, variantId);
-      if (layer === 'cta') updateLayer({ ctaX: x, ctaY: y, showCta: true }, variantId);
+      if (layer === 'hand') updateLayer({ handX: x, handY: y, injectHand: true }, variantId, 'hand');
+      if (layer === 'scan') updateLayer({ scanX: x, scanY: y, injectScan: true }, variantId, 'scan');
+      if (layer === 'cta') updateLayer({ ctaX: x, ctaY: y, showCta: true }, variantId, 'cta');
     },
     [updateLayer],
   );
@@ -608,7 +625,7 @@ export function PlayableStudio() {
                 key={asset.id}
                 type="button"
                 className={`hand-tile ${layerForControls.handId === asset.id ? 'active' : ''}`}
-                onClick={() => updateLayer({ handId: asset.id, handMotion: asset.motion })}
+                onClick={() => updateLayer({ handId: asset.id, handMotion: asset.motion }, undefined, 'hand')}
                 title={asset.label}
               >
                 <img src={asset.src} alt="" />
@@ -763,7 +780,7 @@ export function PlayableStudio() {
               checked={settings.syncAllVariants}
               onChange={(event) => setProjectSetting('syncAllVariants', event.target.checked)}
             />
-            <span>Apply controls to all 4</span>
+            <span>Apply selected layer to all 4</span>
           </label>
           <label className="check-row">
             <input type="checkbox" checked={settings.useClickTag} onChange={(event) => setProjectSetting('useClickTag', event.target.checked)} />
