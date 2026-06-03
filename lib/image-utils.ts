@@ -70,17 +70,25 @@ export async function detectImageHotspot(src: string): Promise<Hotspot> {
         4;
       const xRatio = x / width;
       const yRatio = y / height;
-      const lowerBoost = 0.74 + Math.pow(yRatio, 1.42) * 0.58;
+      const lowerBoost = 0.78 + Math.pow(Math.min(yRatio, 0.78), 1.3) * 0.44;
+      const interactionBandBoost = yRatio > 0.32 && yRatio < 0.8 ? 1.26 : 0.82;
       const centerBoost = 1 - Math.min(0.3, Math.abs(xRatio - 0.5) * 0.58);
-      const ctaBoost = yRatio > 0.56 && saturation > 0.24 ? 0.24 : 0;
+      const ctaBoost = yRatio > 0.48 && yRatio < 0.8 && saturation > 0.24 ? 0.2 : 0;
       const readableBoost = luma > 0.06 && luma < 0.94 ? 1 : 0.45;
+      const blackBarPenalty = luma < 0.04 && saturation < 0.05 ? 0.08 : 1;
+      const outerEdgePenalty = yRatio < 0.1 || yRatio > 0.88 ? 0.28 : 1;
+      const ctaAreaPenalty = yRatio > 0.82 ? 0.48 : 1;
       const score =
         (contrast * 1.65 + saturation * 0.78 + Math.abs(luma - mean) * 0.68 + ctaBoost) *
         lowerBoost *
+        interactionBandBoost *
         centerBoost *
-        readableBoost;
+        readableBoost *
+        blackBarPenalty *
+        outerEdgePenalty *
+        ctaAreaPenalty;
 
-      if (score > 0.045) candidates.push({ x, y, score });
+      if (score > 0.038) candidates.push({ x, y, score });
     }
   }
 

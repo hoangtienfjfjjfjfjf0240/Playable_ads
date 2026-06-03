@@ -1,4 +1,5 @@
-import type { ExportImageInput, LayerSettings, NetworkTarget, Orientation, ProjectSettings } from './types';
+import type { ExportImageInput, LayerSettings, LayerTarget, NetworkTarget, Orientation, ProjectSettings } from './types';
+import { getVisualAsset } from './visual-assets';
 
 export interface ImagePlayableExportInput {
   image: ExportImageInput;
@@ -22,6 +23,17 @@ export interface HtmlPatchInput {
   handDataUrl?: string;
   previewMode?: boolean;
 }
+
+export const networkExportTargets: NetworkTarget[] = ['unity', 'applovin', 'google', 'mintegral', 'moloco'];
+
+export const networkLabels: Record<NetworkTarget, string> = {
+  unity: 'Unity',
+  applovin: 'AppLovin',
+  google: 'Google',
+  mintegral: 'Mintegral',
+  moloco: 'Moloco',
+  mraid: 'Generic MRAID',
+};
 
 export function createDefaultProjectSettings(): ProjectSettings {
   return {
@@ -49,35 +61,56 @@ export function generateImagePlayableHtml({
   orientation = 'portrait',
   previewMode = false,
 }: ImagePlayableExportInput) {
-  const imageRatio = orientation === 'landscape' ? 16 / 9 : 9 / 16;
-  const frameWidthVh = roundCssNumber(imageRatio * 100);
-  const frameHeightVw = roundCssNumber(100 / imageRatio);
+  const frameAspect = orientation === 'landscape' ? 16 / 9 : 9 / 16;
+  const frameWidthVh = roundCssNumber(frameAspect * 100);
+  const frameHeightVw = roundCssNumber(100 / frameAspect);
+  const artboard = getContainedArtboard(image.width, image.height, orientation);
+  const networkHeadMarkup = getNetworkHeadMarkup(network);
   const handMarkup =
     layer.injectHand && handDataUrl
-      ? `<img class="ps-hand motion-${escapeHtml(layer.handMotion)}" src="${handDataUrl}" alt="">`
+      ? `<img class="ps-hand motion-${escapeHtml(layer.handMotion)}" style="z-index:${getLayerZ(layer, 'hand')}" src="${handDataUrl}" alt="">`
       : '';
   const scanMarkup =
     layer.injectScan && layer.scanStyle !== 'none'
-      ? `<div class="ps-scan scan-${escapeHtml(layer.scanStyle)}" aria-hidden="true"></div>`
+      ? `<div class="ps-scan scan-${escapeHtml(layer.scanStyle)}" style="z-index:${getLayerZ(layer, 'scan')}" aria-hidden="true"></div>`
       : '';
-  const ctaMarkup = layer.showCta
-    ? `<button class="ps-cta btn-${escapeHtml(layer.buttonAnimation)}" type="button">${escapeHtml(layer.ctaText)}</button>`
+  const assetMarkup = layer.injectAsset
+    ? `<div class="ps-asset asset-motion-${escapeHtml(getVisualAsset(layer.assetId).motion)}" style="z-index:${getLayerZ(layer, 'asset')}">${renderVisualAssetMarkup(layer.assetId)}</div>`
     : '';
+  const ctaMarkup = layer.showCta
+    ? `<button class="ps-cta btn-${escapeHtml(layer.buttonAnimation)}" style="z-index:${getLayerZ(layer, 'cta')}" type="button">${escapeHtml(layer.ctaText)}</button>`
+    : '';
+  const layerMarkup = getLayerOrder(layer)
+    .map((target) => {
+      if (target === 'scan') return scanMarkup;
+      if (target === 'asset') return assetMarkup;
+      if (target === 'hand') return handMarkup;
+      return ctaMarkup;
+    })
+    .filter(Boolean)
+    .join('\n      ');
 
   return `<!doctype html>
 <html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <meta name="ad.size" content="width=100%,height=100%">
   <title>${escapeHtml(stripExtension(image.name))}</title>
+  ${networkHeadMarkup}
   <style>
-    html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#05070b;font-family:Arial,Helvetica,sans-serif;-webkit-user-select:none;user-select:none}
+    html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#f1f4fb;font-family:Arial,Helvetica,sans-serif;-webkit-user-select:none;user-select:none}
     *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-    .ps-scene{position:fixed;inset:0;overflow:hidden;background:#05070b;touch-action:manipulation}
-    .ps-frame{--target-x:${clamp(layer.handX, 0, 100)}%;--target-y:${clamp(layer.handY, 0, 100)}%;--scan-x:${clamp(layer.scanX, 0, 100)}%;--scan-y:${clamp(layer.scanY, 0, 100)}%;--cta-x:${clamp(layer.ctaX, 0, 100)}%;--cta-y:${clamp(layer.ctaY, 0, 100)}%;--hand-size:${clamp(layer.handSize, 32, 260)}px;--scan-size:${clamp(layer.scanSize, 48, 360)}px;--scan-speed:${clamp(layer.scanSpeed, 400, 5000)}ms;--cta-width:${clamp(layer.ctaWidth, 44, 92)}%;position:absolute;left:50%;top:50%;width:min(100vw,${frameWidthVh}vh);height:min(100vh,${frameHeightVw}vw);transform:translate(-50%,-50%);overflow:hidden;background:#10131a}
-    .ps-creative{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;display:block;background:#05070b}
+    .ps-scene{position:fixed;inset:0;overflow:hidden;background:#f1f4fb;touch-action:manipulation}
+    .ps-frame{--target-x:${clamp(layer.handX, 0, 100)}%;--target-y:${clamp(layer.handY, 0, 100)}%;--scan-x:${clamp(layer.scanX, 0, 100)}%;--scan-y:${clamp(layer.scanY, 0, 100)}%;--asset-x:${clamp(layer.assetX, 0, 100)}%;--asset-y:${clamp(layer.assetY, 0, 100)}%;--cta-x:${clamp(layer.ctaX, 0, 100)}%;--cta-y:${clamp(layer.ctaY, 0, 100)}%;--hand-size:${clamp(layer.handSize, 32, 260)}px;--scan-size:${clamp(layer.scanSize, 48, 360)}px;--asset-size:${clamp(layer.assetSize, 48, 280)}px;--asset-speed:${clamp(layer.assetSpeed, 500, 5000)}ms;--scan-speed:${clamp(layer.scanSpeed, 400, 5000)}ms;--cta-width:${clamp(layer.ctaWidth, 44, 92)}%;--artboard-w:${artboard.widthPercent}%;--artboard-h:${artboard.heightPercent}%;position:absolute;left:50%;top:50%;width:min(100vw,${frameWidthVh}vh);height:min(100vh,${frameHeightVw}vw);transform:translate(-50%,-50%);overflow:hidden;background:#f1f4fb}
+    .ps-backdrop{position:absolute;inset:-3%;width:106%;height:106%;object-fit:cover;filter:blur(18px) saturate(1.04);opacity:.34;transform:scale(1.02);display:block}
+    .ps-artboard{position:absolute;left:50%;top:50%;width:var(--artboard-w);height:var(--artboard-h);transform:translate(-50%,-50%);overflow:hidden;background:#f1f4fb}
+    .ps-creative{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;display:block;background:#f1f4fb}
     .ps-hand{position:absolute;left:var(--target-x);top:var(--target-y);width:var(--hand-size);z-index:6;pointer-events:none;filter:drop-shadow(0 9px 14px rgba(0,0,0,.32));transform:translate(-50%,-50%)}
     .ps-scan{position:absolute;left:var(--scan-x);top:var(--scan-y);width:var(--scan-size);height:var(--scan-size);z-index:5;pointer-events:none;transform:translate(-50%,-50%)}
+    .ps-asset{position:absolute;left:var(--asset-x);top:var(--asset-y);width:var(--asset-size);height:var(--asset-size);display:grid;place-items:center;pointer-events:none;transform:translate(-50%,-50%)}
+    .ps-asset .asset-preview{position:relative;width:100%;height:100%;display:grid;place-items:center;overflow:visible;border:0;border-radius:0;color:#e11d48;background:transparent;box-shadow:none}
+    .ps-asset .asset-preview b{font-size:clamp(14px,18%,28px);font-weight:900;line-height:1}.ps-asset .asset-preview small{font-size:10px;color:#626b7a;font-weight:800}.ps-asset .asset-preview-ecg,.ps-asset .asset-preview-scan-grid,.ps-asset .asset-preview-scan-crop-box,.ps-asset .asset-preview-scan-photo-frame{border-radius:12px}.asset-preview-ecg i{width:78%;height:54%;background:linear-gradient(135deg,transparent 0 20%,#e11d48 21% 24%,transparent 25% 36%,#e11d48 37% 40%,transparent 41% 54%,#e11d48 55% 58%,transparent 59%),linear-gradient(90deg,rgba(225,29,72,.18) 1px,transparent 1px);background-size:100% 100%,10px 10px}.asset-preview-heart-live-dot,.asset-preview-status-normal{display:inline-flex;gap:6px;padding:0 8px;width:auto;min-width:54px;color:#0f9f6e}.asset-preview-heart-live-dot i,.asset-preview-status-normal i{width:9px;height:9px;border-radius:999px;background:currentColor;box-shadow:0 0 0 5px rgba(15,159,110,.12)}.asset-preview-scan-reticle i,.asset-preview-scan-grid i,.asset-preview-scan-beam i{width:62%;height:62%;border:2px solid #28a5ff;border-radius:999px;box-shadow:0 0 0 7px rgba(37,99,235,.1),inset 0 0 0 1px rgba(37,99,235,.25)}.asset-preview-scan-grid i{border-radius:8px;background:linear-gradient(90deg,rgba(37,99,235,.18) 1px,transparent 1px),linear-gradient(180deg,rgba(37,99,235,.18) 1px,transparent 1px);background-size:8px 8px}.asset-preview-scan-beam i:after,.asset-preview-scan-vertical-beam i:after{content:"";position:absolute;top:18%;bottom:18%;left:48%;width:3px;background:#28a5ff;box-shadow:0 0 12px #28a5ff}.asset-preview-scan-food-card,.asset-preview-scan-calorie-chip{align-items:end;justify-items:end;padding:6px;color:#e11d48}.asset-preview-scan-food-card i,.asset-preview-scan-crop-box i,.asset-preview-scan-photo-frame i{position:absolute;left:12%;top:14%;width:58%;height:52%;border:2px solid rgba(255,255,255,.95);border-radius:8px;background:radial-gradient(circle at 34% 42%,#fde68a 0 13%,transparent 14%),radial-gradient(circle at 70% 52%,#86efac 0 14%,transparent 15%),linear-gradient(135deg,#fecaca,#bfdbfe);box-shadow:0 0 0 1px rgba(37,99,235,.26),0 0 18px rgba(37,99,235,.28)}.asset-preview-scan-food-card b,.asset-preview-scan-calorie-chip b{position:relative;z-index:1;padding:3px 5px;border-radius:7px;color:#e11d48;background:#fff;font-size:12px;box-shadow:0 1px 3px rgba(15,23,42,.14)}.asset-preview-scan-food-card small,.asset-preview-scan-calorie-chip small{position:absolute;right:8px;bottom:3px;z-index:1}.asset-preview-scan-corner-lock i{width:62%;height:48%;border-radius:8px;background:linear-gradient(#28a5ff,#28a5ff) left top/14px 3px no-repeat,linear-gradient(#28a5ff,#28a5ff) left top/3px 14px no-repeat,linear-gradient(#28a5ff,#28a5ff) right top/14px 3px no-repeat,linear-gradient(#28a5ff,#28a5ff) right top/3px 14px no-repeat,linear-gradient(#28a5ff,#28a5ff) left bottom/14px 3px no-repeat,linear-gradient(#28a5ff,#28a5ff) left bottom/3px 14px no-repeat,linear-gradient(#28a5ff,#28a5ff) right bottom/14px 3px no-repeat,linear-gradient(#28a5ff,#28a5ff) right bottom/3px 14px no-repeat}.asset-preview-scan-nutrition-arrow i{width:48%;height:48%;border-right:4px solid #ef4444;border-bottom:4px solid #ef4444;border-radius:0 0 18px 0;transform:rotate(8deg)}.asset-preview-scan-nutrition-arrow i:after{content:"";position:absolute;right:-8px;bottom:-7px;border-top:7px solid #ef4444;border-left:7px solid transparent;border-right:7px solid transparent;transform:rotate(-38deg)}.asset-preview-scan-barcode i{width:66%;height:48%;border-radius:6px;background:linear-gradient(90deg,#111827 0 3px,transparent 3px 6px,#111827 6px 8px,transparent 8px 12px,#111827 12px 16px,transparent 16px 19px,#111827 19px 22px,transparent 22px 26px,#111827 26px 28px,transparent 28px 33px,#111827 33px 38px,transparent 38px),#fff;box-shadow:inset 0 0 0 2px rgba(37,99,235,.24)}.asset-preview-scan-vertical-beam i{width:66%;height:52%;border:2px solid rgba(37,99,235,.35);border-radius:8px;background:rgba(219,234,254,.72)}.asset-preview-scan-radar-sweep i{width:62%;height:62%;border-radius:999px;background:conic-gradient(from 40deg,rgba(37,99,235,.05),rgba(37,99,235,.82),rgba(37,99,235,.05) 34%,transparent 35%);border:2px solid rgba(37,99,235,.44);box-shadow:inset 0 0 0 7px rgba(37,99,235,.08),0 0 18px rgba(37,99,235,.28)}.asset-motion-pulse{animation:psAssetPulse var(--asset-speed) ease-in-out infinite}.asset-motion-blink{animation:psAssetBlink var(--asset-speed) steps(2,end) infinite}.asset-motion-sweep .asset-preview:after{content:"";position:absolute;top:-18%;bottom:-18%;left:-20%;width:5px;background:linear-gradient(180deg,transparent,rgba(37,99,235,.82),transparent);box-shadow:0 0 18px rgba(37,99,235,.72);animation:psAssetSweep var(--asset-speed) linear infinite}.asset-motion-wave .asset-preview i{animation:psAssetWave var(--asset-speed) ease-in-out infinite}.asset-motion-count .asset-preview{animation:psAssetCount var(--asset-speed) ease-in-out infinite}
     .scan-sweep{overflow:hidden;border:2px solid rgba(255,255,255,.78);border-radius:16px;background:rgba(31,182,255,.08);box-shadow:0 0 24px rgba(0,194,255,.34)}
     .scan-sweep:after{content:"";position:absolute;top:-20%;bottom:-20%;width:5px;left:-16%;background:linear-gradient(180deg,transparent,#fff,transparent);box-shadow:0 0 18px #00d5ff;animation:psSweep var(--scan-speed) linear infinite}
     .scan-ring{border:4px solid rgba(255,255,255,.92);border-radius:999px;box-shadow:0 0 0 0 rgba(0,213,255,.48),0 0 30px rgba(0,213,255,.34);animation:psRing var(--scan-speed) ease-out infinite}
@@ -91,6 +124,7 @@ export function generateImagePlayableHtml({
     .btn-pulse{animation:psCtaPulse 1.08s ease-in-out infinite}.btn-bounce{animation:psCtaBounce .95s ease-in-out infinite}.btn-shake{animation:psCtaShake .48s ease-in-out infinite}.btn-breath{animation:psCtaBreath 1.15s ease-in-out infinite}.btn-shine{overflow:hidden;background:#f45100}.btn-shine:after{content:"";position:absolute;inset:0;background:linear-gradient(110deg,transparent 0%,rgba(255,255,255,.58) 45%,transparent 70%);transform:translateX(-120%);animation:psCtaShine 1.25s linear infinite}
     .motion-tap{animation:psHandTap 1.05s ease-in-out infinite}.motion-doubleTap{animation:psHandDoubleTap 1.18s ease-in-out infinite}.motion-press{animation:psHandPress 1.05s ease-in-out infinite}.motion-bounce{animation:psHandBounce 1s ease-in-out infinite}.motion-swipeX{animation:psHandSwipeX 1.15s ease-in-out infinite}.motion-swipeY{animation:psHandSwipeY 1.15s ease-in-out infinite}.motion-drag{animation:psHandDrag 1.35s ease-in-out infinite}.motion-shake{animation:psHandShake .62s ease-in-out infinite}.motion-wave{animation:psHandWave 1.08s ease-in-out infinite}
     @keyframes psSweep{0%{left:-16%}100%{left:116%}}@keyframes psRing{0%{transform:translate(-50%,-50%) scale(.72);opacity:1;box-shadow:0 0 0 0 rgba(0,213,255,.52)}100%{transform:translate(-50%,-50%) scale(1.18);opacity:.08;box-shadow:0 0 0 24px rgba(0,213,255,0)}}@keyframes psSpot{0%,100%{transform:translate(-50%,-50%) scale(.92);opacity:.88}50%{transform:translate(-50%,-50%) scale(1.08);opacity:1}}@keyframes psBorderH{0%{left:0}50%{left:62%}100%{left:0}}@keyframes psBorderV{0%{top:0}50%{top:62%}100%{top:0}}@keyframes psSpark{0%{transform:translate(-50%,-50%) scale(.55);opacity:1;box-shadow:0 0 0 0 rgba(245,158,11,.56)}100%{transform:translate(-50%,-50%) scale(1.35);opacity:0;box-shadow:0 0 0 26px rgba(245,158,11,0)}}
+    @keyframes psAssetPulse{0%,100%{transform:translate(-50%,-50%) scale(1)}50%{transform:translate(-50%,-50%) scale(1.08)}}@keyframes psAssetBlink{0%,100%{opacity:1}50%{opacity:.46}}@keyframes psAssetSweep{0%{left:-20%}100%{left:118%}}@keyframes psAssetWave{0%,100%{transform:translateX(-7%)}50%{transform:translateX(7%)}}@keyframes psAssetCount{0%,100%{transform:scale(1)}50%{transform:scale(1.08)}}
     @keyframes psHandTap{0%,100%{transform:translate(-50%,-50%) scale(1)}45%{transform:translate(-50%,-50%) scale(.82)}}@keyframes psHandDoubleTap{0%,100%{transform:translate(-50%,-50%) scale(1)}22%,58%{transform:translate(-50%,-50%) scale(.82)}35%,72%{transform:translate(-50%,-50%) scale(1.03)}}@keyframes psHandPress{0%,100%{transform:translate(-50%,-50%) scale(1)}55%{transform:translate(-50%,-50%) scale(.72);filter:drop-shadow(0 4px 7px rgba(0,0,0,.36))}}@keyframes psHandBounce{0%,100%{transform:translate(-50%,-50%) translateY(0)}50%{transform:translate(-50%,-50%) translateY(-18px)}}@keyframes psHandSwipeX{0%,100%{transform:translate(-74%,-50%)}50%{transform:translate(-28%,-50%)}}@keyframes psHandSwipeY{0%,100%{transform:translate(-50%,-74%)}50%{transform:translate(-50%,-28%)}}@keyframes psHandDrag{0%,100%{transform:translate(-72%,-58%) scale(.96)}50%{transform:translate(-28%,-42%) scale(.9)}}@keyframes psHandShake{0%,100%{transform:translate(-50%,-50%) rotate(0)}25%{transform:translate(-50%,-50%) rotate(-8deg)}75%{transform:translate(-50%,-50%) rotate(8deg)}}@keyframes psHandWave{0%,100%{transform:translate(-50%,-50%) rotate(-9deg)}50%{transform:translate(-50%,-50%) rotate(12deg)}}
     @keyframes psCtaPulse{0%,100%{transform:translate(-50%,-50%) scale(1)}50%{transform:translate(-50%,-50%) scale(1.06)}}@keyframes psCtaBounce{0%,100%{transform:translate(-50%,-50%) translateY(0)}50%{transform:translate(-50%,-50%) translateY(-8px)}}@keyframes psCtaShake{0%,100%{transform:translate(-50%,-50%)}25%{transform:translate(calc(-50% - 5px),-50%)}75%{transform:translate(calc(-50% + 5px),-50%)}}@keyframes psCtaBreath{0%,100%{filter:brightness(1)}50%{filter:brightness(1.18)}}@keyframes psCtaShine{0%{transform:translateX(-120%)}100%{transform:translateX(120%)}}
   </style>
@@ -98,10 +132,11 @@ export function generateImagePlayableHtml({
 <body>
   <main class="ps-scene">
     <div class="ps-frame" role="button" aria-label="Open store">
-      <img class="ps-creative" src="${image.dataUrl}" alt="">
-      ${scanMarkup}
-      ${handMarkup}
-      ${ctaMarkup}
+      <img class="ps-backdrop" src="${image.dataUrl}" alt="">
+      <div class="ps-artboard">
+        <img class="ps-creative" src="${image.dataUrl}" alt="">
+        ${layerMarkup}
+      </div>
     </div>
   </main>
   <script>
@@ -115,11 +150,14 @@ export function generateImagePlayableHtml({
       var target = url || storeUrl || "";
       if (useClickTag && window.clickTag) target = window.clickTag;
       if (previewMode) { console.log("openUrl", target); return; }
+      try { if (network === "google" && typeof ExitApi !== "undefined" && ExitApi.exit) { ExitApi.exit(); return; } } catch(e) {}
+      try { if (network === "mintegral") { if (window.install) window.install(); if (window.gameEnd) window.gameEnd(); return; } } catch(e) {}
+      try { if (network === "moloco" && window.FbPlayableAd && window.FbPlayableAd.onCTAClick) { window.FbPlayableAd.onCTAClick(); return; } } catch(e) {}
       try { if (typeof mraid !== "undefined" && mraid.open) { mraid.open(target); return; } } catch(e) {}
-      try { if (network === "mintegral" && window.install) { window.install(); return; } } catch(e) {}
       if (target) window.location.assign(target);
     }
     window.openUrl = openUrl;
+    window.download = openUrl;
     document.querySelector(".ps-frame").addEventListener("click", function(){ openUrl(); });
     var cta = document.querySelector(".ps-cta");
     if (cta) cta.addEventListener("click", function(event){ event.stopPropagation(); openUrl(); });
@@ -152,6 +190,7 @@ export function patchPlayableHtml({
 
   if (layer.ctaText) out = replaceCommonCtaText(out, layer.ctaText);
 
+  out = ensureNetworkHead(out, network);
   out = ensureOpenUrlRuntime(out, storeUrl, network, useClickTag);
 
   if (layer.buttonAnimation !== 'none') out = injectButtonAnimation(out, layer.buttonAnimation, ctaSelector);
@@ -172,6 +211,7 @@ export function patchPlayableHtml({
 function stripPreviousInjection(html: string) {
   return html
     .replace(/<script id="ps-store-runtime">[\s\S]*?<\/script>\s*/g, '')
+    .replace(/<script id="ps-google-exitapi"[\s\S]*?<\/script>\s*/g, '')
     .replace(/<style id="ps-button-anim-style">[\s\S]*?<\/style>\s*/g, '')
     .replace(/<script id="ps-button-anim-script">[\s\S]*?<\/script>\s*/g, '')
     .replace(/<style id="ps-cta-position-style">[\s\S]*?<\/style>\s*/g, '')
@@ -193,10 +233,13 @@ function ensureOpenUrlRuntime(html: string, storeUrl: string, network: NetworkTa
   window.openUrl = window.openUrl || function(url){
     var target = url || window.psStoreUrl || "";
     if (window.psUseClickTag && window.clickTag) target = window.clickTag;
+    try { if (window.psNetwork === "google" && typeof ExitApi !== "undefined" && ExitApi.exit) { ExitApi.exit(); return; } } catch(e) {}
+    try { if (window.psNetwork === "mintegral") { if (window.install) window.install(); if (window.gameEnd) window.gameEnd(); return; } } catch(e) {}
+    try { if (window.psNetwork === "moloco" && window.FbPlayableAd && window.FbPlayableAd.onCTAClick) { window.FbPlayableAd.onCTAClick(); return; } } catch(e) {}
     try { if (typeof mraid !== "undefined" && mraid.open) { mraid.open(target); return; } } catch(e) {}
-    try { if (window.psNetwork === "mintegral" && window.install) { window.install(); return; } } catch(e) {}
     if (target) window.location.assign(target);
   };
+  window.download = window.openUrl;
 })();
 </script>`;
   return insertBeforeBody(html, runtime);
@@ -299,6 +342,33 @@ function injectHand(html: string, layer: LayerSettings, handDataUrl: string) {
   return insertBeforeBody(html, code);
 }
 
+function getNetworkHeadMarkup(network: NetworkTarget) {
+  if (network === 'google') {
+    return '<script id="ps-google-exitapi" type="text/javascript" src="https://tpc.googlesyndication.com/pagead/gadgets/html5/api/exitapi.js"></script>';
+  }
+  return '';
+}
+
+function ensureNetworkHead(html: string, network: NetworkTarget) {
+  const code = getNetworkHeadMarkup(network);
+  if (!code || /exitapi\.js/i.test(html)) return html;
+  return insertBeforeHeadEnd(html, code);
+}
+
+function getContainedArtboard(width: number | undefined, height: number | undefined, orientation: Orientation) {
+  const frameAspect = orientation === 'landscape' ? 16 / 9 : 9 / 16;
+  const imageAspect = width && height && width > 0 && height > 0 ? width / height : frameAspect;
+  if (imageAspect > frameAspect) {
+    return { widthPercent: 100, heightPercent: roundCssNumber((frameAspect / imageAspect) * 100) };
+  }
+  return { widthPercent: roundCssNumber((imageAspect / frameAspect) * 100), heightPercent: 100 };
+}
+
+function insertBeforeHeadEnd(html: string, code: string) {
+  if (/<\/head>/i.test(html)) return html.replace(/<\/head>/i, `${code}\n</head>`);
+  return `${code}\n${html}`;
+}
+
 function insertBeforeBody(html: string, code: string) {
   if (/<\/body>/i.test(html)) return html.replace(/<\/body>/i, `${code}\n</body>`);
   return `${html}\n${code}`;
@@ -323,6 +393,46 @@ function animName(anim: LayerSettings['handMotion']) {
     shake: 'Shake',
     wave: 'Wave',
   }[anim];
+}
+
+function getLayerOrder(layer: LayerSettings): LayerTarget[] {
+  const raw = Array.isArray(layer.layerOrder) ? layer.layerOrder : ['scan', 'asset', 'hand', 'cta'];
+  const valid = raw.filter((target): target is LayerTarget => target === 'scan' || target === 'asset' || target === 'hand' || target === 'cta');
+  for (const target of ['scan', 'asset', 'hand', 'cta'] as LayerTarget[]) {
+    if (!valid.includes(target)) valid.push(target);
+  }
+  return valid;
+}
+
+function getLayerZ(layer: LayerSettings, target: LayerTarget) {
+  return 5 + Math.max(0, getLayerOrder(layer).indexOf(target));
+}
+
+function renderVisualAssetMarkup(assetId: string) {
+  const asset = getVisualAsset(assetId);
+  const value = escapeHtml(asset.value || '');
+
+  if (asset.category === 'counter') {
+    const suffix = asset.id === 'counter-bpm' ? 'BPM' : asset.id === 'counter-countdown' ? 'tap' : 'score';
+    return `<span class="asset-preview asset-preview-${escapeHtml(asset.id)}"><b>${value || '86'}</b><small>${suffix}</small></span>`;
+  }
+
+  if (asset.id === 'ecg-wave-line') {
+    return '<span class="asset-preview asset-preview-ecg"><i></i></span>';
+  }
+
+  if (asset.id === 'heart-live-dot' || asset.id === 'status-normal') {
+    return `<span class="asset-preview asset-preview-${escapeHtml(asset.id)}"><i></i><b>${value || 'Live'}</b></span>`;
+  }
+
+  if (asset.category === 'scan') {
+    if (asset.id === 'scan-food-card' || asset.id === 'scan-calorie-chip') {
+      return `<span class="asset-preview asset-preview-${escapeHtml(asset.id)}"><i></i><b>${value || '690'}</b><small>kcal</small></span>`;
+    }
+    return `<span class="asset-preview asset-preview-${escapeHtml(asset.id)}"><i></i></span>`;
+  }
+
+  return `<span class="asset-preview asset-preview-${escapeHtml(asset.id)}"><b>&#9829; ${value || '86'}</b></span>`;
 }
 
 export function safeFileName(value: string) {

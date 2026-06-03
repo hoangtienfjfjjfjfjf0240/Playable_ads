@@ -2,8 +2,11 @@
 
 import { AnimatePresence, motion } from 'motion/react';
 import {
+  Activity,
   AlertCircle,
   Archive,
+  ArrowDown,
+  ArrowUp,
   CheckCircle2,
   Crosshair,
   Database,
@@ -13,6 +16,9 @@ import {
   FileCode2,
   Grid2X2,
   Hand,
+  Hash,
+  HeartPulse,
+  History,
   ImagePlus,
   Layers3,
   Loader2,
@@ -31,16 +37,26 @@ import {
 import type { DragEvent } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
-import { generateImagePlayableHtml, patchPlayableHtml, safeFileName, createDefaultProjectSettings } from '../lib/export-engine';
+import type JSZip from 'jszip';
+import {
+  createDefaultProjectSettings,
+  generateImagePlayableHtml,
+  networkExportTargets,
+  networkLabels,
+  patchPlayableHtml,
+  safeFileName,
+} from '../lib/export-engine';
 import { getHandAsset, handAssets } from '../lib/hand-assets';
 import { detectImageHotspot, getImageDimensions, loadAssetAsDataUrl, readFileAsDataUrl, readFileAsText } from '../lib/image-utils';
 import { buttonPresets, defaultLayerSettings, handMotionPresets, recipePresets, scanPresets } from '../lib/presets';
+import { getVisualAsset, visualAssets } from '../lib/visual-assets';
 import type {
   AiVariantResponseItem,
   ExportImageInput,
   Hotspot,
   LayerSettings,
   LayerTarget,
+  NetworkTarget,
   PlayableVariant,
   ProjectSettings,
   SourceItem,
@@ -56,6 +72,16 @@ type HealthState = {
 
 type Notice = { tone: 'ok' | 'warn' | 'error' | 'busy'; text: string } | null;
 type AiWorkerStatus = 'idle' | 'running' | 'done' | 'error';
+type AssetLibraryTab = 'hand' | 'scan' | 'heart' | 'counter';
+type GenerationHistoryEntry = {
+  id: string;
+  name: string;
+  createdAt: number;
+  provider: ProjectSettings['aiProvider'];
+  model: string;
+  durationSeconds: number | null;
+  variants: PlayableVariant[];
+};
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, Number.isNaN(value) ? min : value));
 
@@ -65,10 +91,18 @@ const uid = () => {
 };
 
 const LAYER_DRAG_TYPE = 'application/x-playable-layer';
+const ASSET_DRAG_TYPE = 'application/x-playable-asset';
 const layerFieldMap: Record<LayerTarget, Array<keyof LayerSettings>> = {
-  hand: ['handId', 'handMotion', 'handX', 'handY', 'handSize', 'injectHand'],
-  scan: ['scanStyle', 'scanX', 'scanY', 'scanSize', 'scanSpeed', 'injectScan'],
-  cta: ['ctaText', 'ctaX', 'ctaY', 'ctaWidth', 'showCta', 'buttonAnimation'],
+  hand: ['layerOrder', 'handId', 'handMotion', 'handX', 'handY', 'handSize', 'injectHand'],
+  scan: ['layerOrder', 'scanStyle', 'scanX', 'scanY', 'scanSize', 'scanSpeed', 'injectScan'],
+  asset: ['layerOrder', 'assetId', 'assetX', 'assetY', 'assetSize', 'assetSpeed', 'injectAsset'],
+  cta: ['layerOrder', 'ctaText', 'ctaX', 'ctaY', 'ctaWidth', 'showCta', 'buttonAnimation'],
+};
+const layerMeta: Record<LayerTarget, { label: string; group: string }> = {
+  hand: { label: 'Hand', group: 'Interaction' },
+  scan: { label: 'Scan', group: 'Detection' },
+  asset: { label: 'Asset', group: 'Visual' },
+  cta: { label: 'CTA', group: 'Action' },
 };
 const aiProviderModelMap: Record<ProjectSettings['aiProvider'], string> = {
   openai: 'gpt-image-2',
@@ -76,14 +110,19 @@ const aiProviderModelMap: Record<ProjectSettings['aiProvider'], string> = {
   'gemini-pro': 'gemini/gemini-3-pro-image-preview',
 };
 
-function setLayerDragData(event: DragEvent<HTMLElement>, layer: LayerTarget) {
+function setLayerDragData(event: DragEvent<HTMLElement>, layer: LayerTarget, assetId?: string) {
   event.dataTransfer.setData(LAYER_DRAG_TYPE, layer);
+  if (assetId) event.dataTransfer.setData(ASSET_DRAG_TYPE, assetId);
   event.dataTransfer.effectAllowed = 'move';
 }
 
 function getLayerDragData(event: DragEvent<HTMLElement>): LayerTarget | null {
   const value = event.dataTransfer.getData(LAYER_DRAG_TYPE);
-  return value === 'hand' || value === 'scan' || value === 'cta' ? value : null;
+  return value === 'hand' || value === 'scan' || value === 'asset' || value === 'cta' ? value : null;
+}
+
+function getAssetDragData(event: DragEvent<HTMLElement>) {
+  return event.dataTransfer.getData(ASSET_DRAG_TYPE) || '';
 }
 
 function getPointInElement(element: HTMLElement, clientX: number, clientY: number) {
@@ -116,6 +155,8 @@ export function PlayableStudio() {
   const [paused, setPaused] = useState(false);
   const [aiWorkers, setAiWorkers] = useState<AiWorkerStatus[]>(['idle', 'idle', 'idle', 'idle']);
   const [lastAiDuration, setLastAiDuration] = useState<number | null>(null);
+  const [generationHistory, setGenerationHistory] = useState<GenerationHistoryEntry[]>([]);
+  const [assetLibraryTab, setAssetLibraryTab] = useState<AssetLibraryTab>('hand');
 
   const activeSource = useMemo(
     () => sources.find((source) => source.id === activeSourceId) || sources[0] || null,
@@ -129,6 +170,10 @@ export function PlayableStudio() {
   const activeAiReady =
     settings.aiProvider === 'openai' ? Boolean(health?.openAiConfigured) : Boolean(health?.geminiConfigured);
   const activeAiLabel = settings.aiProvider === 'openai' ? 'GPT' : 'Gemini';
+  const visibleVisualAssets = useMemo(
+    () => (assetLibraryTab === 'hand' ? [] : visualAssets.filter((asset) => asset.category === assetLibraryTab)),
+    [assetLibraryTab],
+  );
 
   const refreshHealth = useCallback(() => {
     let cancelled = false;
@@ -148,6 +193,33 @@ export function PlayableStudio() {
   }, []);
 
   useEffect(() => refreshHealth(), [refreshHealth]);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem('playable-generation-history');
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as GenerationHistoryEntry[];
+      setGenerationHistory(
+        parsed.slice(0, 6).map((entry) => ({
+          ...entry,
+          variants: entry.variants.map((variant) => ({
+            ...variant,
+            settings: normalizeLayerSettings(variant.settings),
+          })),
+        })),
+      );
+    } catch {
+      setGenerationHistory([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('playable-generation-history', JSON.stringify(generationHistory.slice(0, 6)));
+    } catch {
+      // Base64 image history can exceed browser quota; keep the current session state even if persistence fails.
+    }
+  }, [generationHistory]);
 
   const setProjectSetting = <K extends keyof ProjectSettings>(key: K, value: ProjectSettings[K]) => {
     setSettings((current) => ({ ...current, [key]: value }));
@@ -228,6 +300,7 @@ export function PlayableStudio() {
         return;
       }
       setNotice({ tone: 'ok', text: `${imported.length} file sẵn sàng` });
+      setNotice({ tone: 'ok', text: `Da export ${variants.length * networkExportTargets.length} HTML (${variants.length} variant x 5 nen tang)` });
     } catch (error) {
       setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Import thất bại' });
     } finally {
@@ -242,7 +315,8 @@ export function PlayableStudio() {
     index: number,
   ): Promise<PlayableVariant> => {
     const dimensions = await getImageDimensions(image.dataUrl);
-    const hotspot = await detectImageHotspot(image.dataUrl).catch(() => source.hotspot || defaultHotspot());
+    const rawHotspot = await detectImageHotspot(image.dataUrl).catch(() => source.hotspot || defaultHotspot());
+    const hotspot = projectHotspotToFrame(rawHotspot, dimensions, settings.orientation);
     return {
       id: uid(),
       sourceId: source.id,
@@ -292,12 +366,12 @@ export function PlayableStudio() {
 
   const generateVariants = async () => {
     if (!activeSource?.dataUrl || activeSource.kind !== 'image') {
-      setNotice({ tone: 'error', text: 'Chọn ảnh nguồn trước' });
+      setNotice({ tone: 'error', text: 'Chon anh nguon truoc' });
       return;
     }
 
     setBusy(true);
-    setNotice({ tone: 'busy', text: 'AI đang chạy 4 luồng tạo variant song song...' });
+    setNotice({ tone: 'busy', text: 'AI dang chay 4 luong song song, anh nao xong se hien truoc...' });
     setLastAiDuration(null);
     setAiWorkers(['running', 'running', 'running', 'running']);
     setSources((current) =>
@@ -315,28 +389,95 @@ export function PlayableStudio() {
           provider: settings.aiProvider,
           model: aiProviderModelMap[settings.aiProvider],
           aspectRatio: settings.orientation === 'landscape' ? '16:9' : '9:16',
+          stream: true,
         }),
       });
 
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.error || `AI request failed (${response.status})`);
+      const contentType = response.headers.get('content-type') || '';
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || `AI request failed (${response.status})`);
+      }
 
-      const generated = (payload.variants || []).slice(0, 4) as AiVariantResponseItem[];
-      if (!generated.length) throw new Error('AI không trả ảnh variant');
-      const durationSeconds = typeof payload.durationMs === 'number' ? Math.max(1, Math.round(payload.durationMs / 1000)) : null;
-      const warningCount = Array.isArray(payload.errors) ? payload.errors.length : 0;
+      let next: PlayableVariant[] = [];
+      let durationSeconds: number | null = null;
+      let warningCount = 0;
+
+      if (contentType.includes('application/x-ndjson') && response.body) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        const slots: Array<PlayableVariant | null> = Array.from({ length: 4 }, () => null);
+        const streamErrors: string[] = [];
+        let buffer = '';
+
+        const handleLine = async (line: string) => {
+          if (!line.trim()) return;
+          let event: {
+            type?: string;
+            index?: number;
+            variant?: AiVariantResponseItem;
+            error?: string;
+            errors?: string[];
+            durationMs?: number;
+          };
+
+          try {
+            event = JSON.parse(line);
+          } catch {
+            return;
+          }
+
+          if (event.type === 'variant' && typeof event.index === 'number' && event.variant) {
+            const playable = await createVariantFromImage(activeSource, event.variant, event.index + 1);
+            slots[event.index] = playable;
+            next = slots.filter((item): item is PlayableVariant => Boolean(item));
+            setVariants(next);
+            setSelectedVariantId((current) => current || playable.id);
+            setAiWorkers((current) => current.map((status, index) => (index === event.index ? 'done' : status)));
+          }
+
+          if (event.type === 'error' && typeof event.index === 'number') {
+            if (event.error) streamErrors.push(event.error);
+            setAiWorkers((current) => current.map((status, index) => (index === event.index ? 'error' : status)));
+          }
+
+          if (event.type === 'done') {
+            durationSeconds = typeof event.durationMs === 'number' ? Math.max(1, Math.round(event.durationMs / 1000)) : null;
+            warningCount = Array.isArray(event.errors) ? event.errors.length : streamErrors.length;
+          }
+        };
+
+        while (true) {
+          const { value, done } = await reader.read();
+          buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) await handleLine(line);
+          if (done) break;
+        }
+
+        if (buffer.trim()) await handleLine(buffer);
+        if (!next.length) throw new Error(streamErrors.join('; ') || 'AI khong tra anh variant');
+      } else {
+        const payload = await response.json().catch(() => ({}));
+        const generated = (payload.variants || []).slice(0, 4) as AiVariantResponseItem[];
+        if (!generated.length) throw new Error('AI khong tra anh variant');
+        durationSeconds = typeof payload.durationMs === 'number' ? Math.max(1, Math.round(payload.durationMs / 1000)) : null;
+        warningCount = Array.isArray(payload.errors) ? payload.errors.length : 0;
+        setAiWorkers(Array.from({ length: 4 }, (_, index) => (index < generated.length ? 'done' : 'error')));
+        next = await Promise.all(generated.map((item, index) => createVariantFromImage(activeSource, item, index + 1)));
+      }
+
       setLastAiDuration(durationSeconds);
-      setAiWorkers(Array.from({ length: 4 }, (_, index) => (index < generated.length ? 'done' : 'error')));
-
-      const next = await Promise.all(generated.map((item, index) => createVariantFromImage(activeSource, item, index + 1)));
       setVariants(next);
       setSelectedVariantId(next[0]?.id || '');
       setSources((current) =>
         current.map((source) => (source.id === activeSource.id ? { ...source, status: 'done' } : source)),
       );
+      rememberGeneration(next, durationSeconds);
       setNotice({
         tone: warningCount ? 'warn' : 'ok',
-        text: `${next.length} variant đã tạo${durationSeconds ? ` trong ${durationSeconds}s` : ''}${warningCount ? `, lỗi ${warningCount}` : ''}`,
+        text: `${next.length} variant da tao${durationSeconds ? ` trong ${durationSeconds}s` : ''}${warningCount ? `, loi ${warningCount}` : ''}`,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'AI generation failed';
@@ -351,7 +492,6 @@ export function PlayableStudio() {
       setBusy(false);
     }
   };
-
   const detectAllVariants = async () => {
     if (!variants.length) return;
     setBusy(true);
@@ -360,16 +500,16 @@ export function PlayableStudio() {
     try {
       const next = await Promise.all(
         variants.map(async (variant) => {
-          const hotspot = await detectImageHotspot(variant.dataUrl);
+          const rawHotspot = await detectImageHotspot(variant.dataUrl);
+          const hotspot = projectHotspotToFrame(rawHotspot, variant, settings.orientation);
+          const suggestedLayer = layerFromHotspot(hotspot, variant.index);
           return {
             ...variant,
             hotspot,
             settings: {
               ...variant.settings,
-              handX: Math.round(hotspot.x),
-              handY: Math.round(hotspot.y),
-              scanX: Math.round(hotspot.x),
-              scanY: Math.round(hotspot.y),
+              ...suggestedLayer,
+              ctaText: variant.settings.ctaText,
             },
           };
         }),
@@ -383,7 +523,7 @@ export function PlayableStudio() {
     }
   };
 
-  const exportVariantHtml = async (variant: PlayableVariant) => {
+  const exportVariantHtml = async (variant: PlayableVariant, network: NetworkTarget = settings.network) => {
     const handDataUrl = variant.settings.injectHand ? await getHandDataUrl(variant.settings.handId) : undefined;
     const image: ExportImageInput = {
       name: variant.name,
@@ -395,20 +535,34 @@ export function PlayableStudio() {
       image,
       layer: variant.settings,
       storeUrl: settings.storeUrl,
-      network: settings.network,
+      network,
       useClickTag: settings.useClickTag,
       handDataUrl,
       orientation: settings.orientation,
     });
   };
 
+  const addVariantNetworkFiles = async (zip: JSZip, variant: PlayableVariant) => {
+    const safeName = safeFileName(variant.name);
+    const folder = zip.folder(safeName) || zip;
+    for (const network of networkExportTargets) {
+      const html = await exportVariantHtml(variant, network);
+      folder.file(`${safeName}_${network}.html`, html);
+    }
+  };
+
   const exportSelected = async () => {
     if (selectedVariant) {
       setBusy(true);
+      setNotice({ tone: 'busy', text: 'Dang xuat 5 nen tang cho variant' });
       try {
-        const html = await exportVariantHtml(selectedVariant);
-        downloadBlob(`${safeFileName(selectedVariant.name)}_applovin.html`, html, 'text/html;charset=utf-8');
+        const JSZip = (await import('jszip')).default;
+        const zip = new JSZip();
+        await addVariantNetworkFiles(zip, selectedVariant);
+        const blob = await zip.generateAsync({ type: 'blob' });
+        downloadBlob(`${safeFileName(selectedVariant.name)}_5_networks.zip`, blob, 'application/zip');
         setNotice({ tone: 'ok', text: 'Đã xuất variant đang chọn' });
+        setNotice({ tone: 'ok', text: 'Da xuat 5 nen tang cho variant dang chon' });
       } finally {
         setBusy(false);
       }
@@ -450,11 +604,10 @@ export function PlayableStudio() {
       const JSZip = (await import('jszip')).default;
       const zip = new JSZip();
       for (const variant of variants) {
-        const html = await exportVariantHtml(variant);
-        zip.file(`${safeFileName(variant.name)}_applovin.html`, html);
+        await addVariantNetworkFiles(zip, variant);
       }
       const blob = await zip.generateAsync({ type: 'blob' });
-      downloadBlob(`${safeFileName(settings.name)}_4_playables.zip`, blob, 'application/zip');
+      downloadBlob(`${safeFileName(settings.name)}_4_playables_5_networks.zip`, blob, 'application/zip');
       setNotice({ tone: 'ok', text: 'Đã export ZIP 4 playable' });
     } catch (error) {
       setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Export ZIP thất bại' });
@@ -503,11 +656,58 @@ export function PlayableStudio() {
     return dataUrl;
   };
 
+  const rememberGeneration = (nextVariants: PlayableVariant[], durationSeconds: number | null) => {
+    if (!nextVariants.length) return;
+    const entry: GenerationHistoryEntry = {
+      id: uid(),
+      name: `${settings.name || 'Playable'} - ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
+      createdAt: Date.now(),
+      provider: settings.aiProvider,
+      model: aiProviderModelMap[settings.aiProvider],
+      durationSeconds,
+      variants: nextVariants.map((variant) => ({
+        ...variant,
+        settings: normalizeLayerSettings(variant.settings),
+      })),
+    };
+    setGenerationHistory((current) => [entry, ...current].slice(0, 6));
+  };
+
+  const restoreGeneration = (entry: GenerationHistoryEntry) => {
+    const restored = entry.variants.map((variant, index) => ({
+      ...variant,
+      id: uid(),
+      index: index + 1,
+      settings: normalizeLayerSettings(variant.settings),
+    }));
+    setVariants(restored);
+    setSelectedVariantId(restored[0]?.id || '');
+    setSelectedLayer('hand');
+    setLastAiDuration(entry.durationSeconds);
+    setAiWorkers(Array.from({ length: 4 }, (_, index) => (index < restored.length ? 'done' : 'idle')));
+    setNotice({ tone: 'ok', text: `Restored ${restored.length} variants from history` });
+  };
+
   const applyRecipe = (recipeId: string) => {
     const recipe = recipePresets.find((item) => item.id === recipeId);
     if (!recipe) return;
     updateLayer(recipe.layer);
     setNotice({ tone: 'ok', text: `Preset ${recipe.label}` });
+  };
+
+  const applyVisualAsset = (assetId: string) => {
+    const asset = getVisualAsset(assetId);
+    setSelectedLayer('asset');
+    updateLayer(
+      {
+        assetId,
+        injectAsset: true,
+        layerOrder: ensureLayerInOrder(getLayerOrder(activeLayer), 'asset'),
+      },
+      undefined,
+      'asset',
+    );
+    setNotice({ tone: 'ok', text: `Asset ${asset.label}` });
   };
 
   const removeSource = (sourceId: string) => {
@@ -526,7 +726,9 @@ export function PlayableStudio() {
         ? ({ injectHand: false } satisfies Partial<LayerSettings>)
         : selectedLayer === 'scan'
           ? ({ injectScan: false } satisfies Partial<LayerSettings>)
-          : ({ showCta: false } satisfies Partial<LayerSettings>);
+          : selectedLayer === 'asset'
+            ? ({ injectAsset: false } satisfies Partial<LayerSettings>)
+            : ({ showCta: false } satisfies Partial<LayerSettings>);
 
     setVariants((current) =>
       current.map((variant) =>
@@ -549,18 +751,44 @@ export function PlayableStudio() {
     setNotice({ tone: 'ok', text: `Deleted Variant ${selectedVariant.index}` });
   };
 
-  const layerForControls = selectedVariant?.settings || defaultLayerSettings;
+  const layerForControls = normalizeLayerSettings(selectedVariant?.settings || defaultLayerSettings);
 
   const moveLayer = useCallback(
-    (variantId: string, layer: LayerTarget, x: number, y: number) => {
+    (variantId: string, layer: LayerTarget, x: number, y: number, assetId?: string) => {
       setSelectedVariantId(variantId);
       setSelectedLayer(layer);
       if (layer === 'hand') updateLayer({ handX: x, handY: y, injectHand: true }, variantId, 'hand');
       if (layer === 'scan') updateLayer({ scanX: x, scanY: y, injectScan: true }, variantId, 'scan');
+      if (layer === 'asset') {
+        updateLayer(
+          { assetX: x, assetY: y, injectAsset: true, ...(assetId ? { assetId } : {}) },
+          variantId,
+          'asset',
+        );
+      }
       if (layer === 'cta') updateLayer({ ctaX: x, ctaY: y, showCta: true }, variantId, 'cta');
     },
     [updateLayer],
   );
+
+  const setLayerVisibility = (layer: LayerTarget, visible: boolean) => {
+    setSelectedLayer(layer);
+    if (layer === 'hand') updateLayer({ injectHand: visible }, undefined, 'hand');
+    if (layer === 'scan') updateLayer({ injectScan: visible }, undefined, 'scan');
+    if (layer === 'asset') updateLayer({ injectAsset: visible }, undefined, 'asset');
+    if (layer === 'cta') updateLayer({ showCta: visible }, undefined, 'cta');
+  };
+
+  const moveLayerOrder = (layer: LayerTarget, direction: 'up' | 'down') => {
+    const order = getLayerOrder(layerForControls);
+    const index = order.indexOf(layer);
+    const swapIndex = direction === 'up' ? index + 1 : index - 1;
+    if (index < 0 || swapIndex < 0 || swapIndex >= order.length) return;
+    const next = [...order];
+    [next[index], next[swapIndex]] = [next[swapIndex], next[index]];
+    setSelectedLayer(layer);
+    updateLayer({ layerOrder: next }, undefined, layer);
+  };
 
   return (
     <main className="studio-shell">
@@ -644,7 +872,34 @@ export function PlayableStudio() {
 
         <section className="sidebar-section">
           <div className="section-head">
-            <span>Mix preset</span>
+            <span>Gen history</span>
+            <b>{generationHistory.length}</b>
+          </div>
+          <div className="history-list">
+            {generationHistory.length ? (
+              generationHistory.map((entry) => (
+                <button key={entry.id} type="button" className="history-row" onClick={() => restoreGeneration(entry)}>
+                  <span className="source-icon">
+                    <History size={15} />
+                  </span>
+                  <span className="source-meta">
+                    <strong>{entry.name}</strong>
+                    <small>
+                      {entry.variants.length} variants · {entry.provider === 'openai' ? 'GPT' : 'Gemini'}
+                      {entry.durationSeconds ? ` · ${entry.durationSeconds}s` : ''}
+                    </small>
+                  </span>
+                </button>
+              ))
+            ) : (
+              <p className="empty-note">Generated batches will appear here.</p>
+            )}
+          </div>
+        </section>
+
+        <section className="sidebar-section">
+          <div className="section-head">
+            <span>Animation library</span>
             <b>{recipePresets.length}</b>
           </div>
           <div className="recipe-grid">
@@ -658,24 +913,67 @@ export function PlayableStudio() {
           </div>
         </section>
 
-        <section className="sidebar-section hands-section">
+        <section className="sidebar-section asset-library-section">
           <div className="section-head">
-            <span>Hand asset</span>
-            <b>{handAssets.length}</b>
+            <span>Asset library</span>
+            <b>{assetLibraryTab === 'hand' ? handAssets.length : visibleVisualAssets.length}</b>
           </div>
-          <div className="hand-grid">
-            {handAssets.map((asset) => (
+          <div className="asset-tabs" role="tablist" aria-label="Asset library">
+            {(['hand', 'scan', 'heart', 'counter'] as AssetLibraryTab[]).map((tab) => (
               <button
-                key={asset.id}
+                key={tab}
                 type="button"
-                className={`hand-tile ${layerForControls.handId === asset.id ? 'active' : ''}`}
-                onClick={() => updateLayer({ handId: asset.id, handMotion: asset.motion }, undefined, 'hand')}
-                title={asset.label}
+                className={assetLibraryTab === tab ? 'active' : ''}
+                onClick={() => setAssetLibraryTab(tab)}
               >
-                <img src={asset.src} alt="" />
+                {tab === 'hand' ? <Hand size={14} /> : tab === 'scan' ? <ScanLine size={14} /> : tab === 'heart' ? <HeartPulse size={14} /> : <Hash size={14} />}
+                <span>{tab}</span>
               </button>
             ))}
           </div>
+
+          {assetLibraryTab === 'hand' ? (
+            <div className="hand-grid asset-library-grid">
+              {handAssets.map((asset) => (
+                <button
+                  key={asset.id}
+                  type="button"
+                  draggable
+                  className={`hand-tile ${layerForControls.handId === asset.id ? 'active' : ''}`}
+                  onDragStart={(event) => {
+                    setLayerDragData(event, 'hand');
+                    setSelectedLayer('hand');
+                    updateLayer({ handId: asset.id, handMotion: asset.motion, injectHand: true }, undefined, 'hand');
+                  }}
+                  onClick={() => {
+                    setSelectedLayer('hand');
+                    updateLayer({ handId: asset.id, handMotion: asset.motion, injectHand: true }, undefined, 'hand');
+                  }}
+                  title={asset.label}
+                >
+                  <img src={asset.src} alt="" />
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="asset-grid asset-library-grid">
+              {visibleVisualAssets.map((asset) => (
+                <button
+                  key={asset.id}
+                  type="button"
+                  draggable
+                  className={`asset-tile ${layerForControls.assetId === asset.id ? 'active' : ''}`}
+                  onDragStart={(event) => setLayerDragData(event, 'asset', asset.id)}
+                  onClick={() => applyVisualAsset(asset.id)}
+                  title={`${asset.label} - ${asset.note}`}
+                >
+                  <VisualAssetIcon assetId={asset.id} loopPreview />
+                  <strong>{asset.label}</strong>
+                  <small>{asset.note}</small>
+                </button>
+              ))}
+            </div>
+          )}
         </section>
       </aside>
 
@@ -724,7 +1022,7 @@ export function PlayableStudio() {
                 selectedLayer={selectedLayer}
                 onSelect={() => setSelectedVariantId(variant.id)}
                 onLayerSelect={setSelectedLayer}
-                onLayerDrop={(layer, x, y) => moveLayer(variant.id, layer, x, y)}
+                onLayerDrop={(layer, x, y, assetId) => moveLayer(variant.id, layer, x, y, assetId)}
               />
             ))
           ) : (
@@ -754,6 +1052,16 @@ export function PlayableStudio() {
               >
                 <ScanLine size={15} />
                 Scan
+              </button>
+              <button
+                className={selectedLayer === 'asset' ? 'active' : ''}
+                type="button"
+                draggable
+                onDragStart={(event) => setLayerDragData(event, 'asset')}
+                onClick={() => setSelectedLayer('asset')}
+              >
+                <Activity size={15} />
+                Asset
               </button>
               <button
                 className={selectedLayer === 'cta' ? 'active' : ''}
@@ -801,30 +1109,26 @@ export function PlayableStudio() {
             <span>Store URL</span>
             <input value={settings.storeUrl} onChange={(event) => setProjectSetting('storeUrl', event.target.value)} />
           </label>
+          <label className="field">
+            <span>AI model</span>
+            <select value={settings.aiProvider} onChange={(event) => setProjectSetting('aiProvider', event.target.value as ProjectSettings['aiProvider'])}>
+              <option value="gemini-flash">Gemini 3.1 Flash Image</option>
+              <option value="gemini-pro">Gemini 3 Pro Image</option>
+              <option value="openai">GPT Image</option>
+            </select>
+          </label>
+          {!activeAiReady && health && <div className="field-status warn">Missing AI_API_KEY</div>}
           <div className="field-grid">
-            <label className="field">
-              <span>AI model</span>
-              <select value={settings.aiProvider} onChange={(event) => setProjectSetting('aiProvider', event.target.value as ProjectSettings['aiProvider'])}>
-                <option value="gemini-flash">Gemini 3.1 Flash Image</option>
-                <option value="gemini-pro">Gemini 3 Pro Image</option>
-                <option value="openai">GPT Image</option>
-              </select>
-            </label>
-            {!activeAiReady && health && (
-              <div className="field-status warn">
-                Missing AI_API_KEY
-              </div>
-            )}
             <label className="field">
               <span>Network</span>
               <select value={settings.network} onChange={(event) => setProjectSetting('network', event.target.value as ProjectSettings['network'])}>
-                <option value="applovin">Applovin</option>
-                <option value="mintegral">Mintegral</option>
-                <option value="mraid">Generic MRAID</option>
+                {networkExportTargets.map((network) => (
+                  <option key={network} value={network}>
+                    {networkLabels[network]}
+                  </option>
+                ))}
               </select>
             </label>
-          </div>
-          <div className="field-grid">
             <label className="field">
               <span>Mode</span>
               <select value={settings.orientation} onChange={(event) => setProjectSetting('orientation', event.target.value as ProjectSettings['orientation'])}>
@@ -849,9 +1153,33 @@ export function PlayableStudio() {
 
         <section className="panel-section">
           <div className="section-title">
+            <h3>Layer Stack</h3>
+            <span>{selectedVariant ? `V${selectedVariant.index}` : 'none'}</span>
+          </div>
+          <LayerStack
+            layer={layerForControls}
+            selectedLayer={selectedLayer}
+            onSelect={setSelectedLayer}
+            onVisibleChange={setLayerVisibility}
+            onMove={moveLayerOrder}
+          />
+        </section>
+
+        <section className="panel-section">
+          <div className="section-title">
             <h3>Layer Control</h3>
             <span>{selectedLayer}</span>
           </div>
+          {selectedVariant && (
+            <div className="analysis-card">
+              <span>AI placement</span>
+              <strong>{Math.round(selectedVariant.hotspot.confidence * 100)}% confidence</strong>
+              <small>
+                X {Math.round(selectedVariant.hotspot.x)} / Y {Math.round(selectedVariant.hotspot.y)} - {layerForControls.handMotion} +{' '}
+                {layerForControls.scanStyle} + {layerForControls.buttonAnimation}
+              </small>
+            </div>
+          )}
           <div className="segmented-row">
             <button
               className={selectedLayer === 'hand' ? 'active' : ''}
@@ -870,6 +1198,15 @@ export function PlayableStudio() {
               onClick={() => setSelectedLayer('scan')}
             >
               <ScanLine size={15} />
+            </button>
+            <button
+              className={selectedLayer === 'asset' ? 'active' : ''}
+              type="button"
+              draggable
+              onDragStart={(event) => setLayerDragData(event, 'asset')}
+              onClick={() => setSelectedLayer('asset')}
+            >
+              <Activity size={15} />
             </button>
             <button
               className={selectedLayer === 'cta' ? 'active' : ''}
@@ -927,6 +1264,29 @@ export function PlayableStudio() {
             </div>
           )}
 
+          {selectedLayer === 'asset' && (
+            <div className="control-stack">
+              <label className="field">
+                <span>Asset type</span>
+                <select value={layerForControls.assetId} onChange={(event) => updateLayer({ assetId: event.target.value, injectAsset: true })}>
+                  {visualAssets.map((asset) => (
+                    <option key={asset.id} value={asset.id}>
+                      {asset.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <NumberControl label="X" value={layerForControls.assetX} min={0} max={100} onChange={(value) => updateLayer({ assetX: value })} />
+              <NumberControl label="Y" value={layerForControls.assetY} min={0} max={100} onChange={(value) => updateLayer({ assetY: value })} />
+              <NumberControl label="Size" value={layerForControls.assetSize} min={48} max={280} onChange={(value) => updateLayer({ assetSize: value })} />
+              <NumberControl label="Speed" value={layerForControls.assetSpeed} min={500} max={5000} step={100} onChange={(value) => updateLayer({ assetSpeed: value })} />
+              <label className="check-row">
+                <input type="checkbox" checked={layerForControls.injectAsset} onChange={(event) => updateLayer({ injectAsset: event.target.checked })} />
+                <span>Asset visible</span>
+              </label>
+            </div>
+          )}
+
           {selectedLayer === 'cta' && (
             <div className="control-stack">
               <label className="field">
@@ -976,11 +1336,11 @@ export function PlayableStudio() {
           <div className="action-grid">
             <button className="secondary-button wide" type="button" onClick={exportSelected} disabled={busy || (!selectedVariant && !activeSource?.html)}>
               <Download size={16} />
-              Export
+              Export x5
             </button>
             <button className="secondary-button wide" type="button" onClick={exportZip} disabled={busy || !variants.length}>
               <Archive size={16} />
-              ZIP x4
+              ZIP x20
             </button>
             <button className="primary-button wide" type="button" onClick={saveProject} disabled={busy || !variants.length}>
               <Save size={16} />
@@ -991,6 +1351,71 @@ export function PlayableStudio() {
       </aside>
     </main>
   );
+}
+
+function LayerStack({
+  layer,
+  selectedLayer,
+  onSelect,
+  onVisibleChange,
+  onMove,
+}: {
+  layer: LayerSettings;
+  selectedLayer: LayerTarget;
+  onSelect: (layer: LayerTarget) => void;
+  onVisibleChange: (layer: LayerTarget, visible: boolean) => void;
+  onMove: (layer: LayerTarget, direction: 'up' | 'down') => void;
+}) {
+  const order = getLayerOrder(layer);
+  const topToBottom = [...order].reverse();
+
+  return (
+    <div className="layer-stack">
+      {topToBottom.map((target, displayIndex) => {
+        const sourceIndex = order.indexOf(target);
+        const visible = isLayerVisible(layer, target);
+        return (
+          <div key={target} className={`layer-row ${selectedLayer === target ? 'active' : ''}`}>
+            <button className="layer-select" type="button" onClick={() => onSelect(target)}>
+              <span className="layer-icon">{layerIcon(target)}</span>
+              <span>
+                <strong>{layerMeta[target].label}</strong>
+                <small>{layerMeta[target].group}</small>
+              </span>
+            </button>
+            <button className="layer-mini" type="button" onClick={() => onVisibleChange(target, !visible)} title={visible ? 'Hide' : 'Show'}>
+              {visible ? <Eye size={14} /> : <EyeOff size={14} />}
+            </button>
+            <button className="layer-mini" type="button" onClick={() => onMove(target, 'up')} disabled={displayIndex === 0} title="Move up">
+              <ArrowUp size={14} />
+            </button>
+            <button
+              className="layer-mini"
+              type="button"
+              onClick={() => onMove(target, 'down')}
+              disabled={sourceIndex === 0}
+              title="Move down"
+            >
+              <ArrowDown size={14} />
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function getContainedArtboardStyle(width: number | undefined, height: number | undefined, orientation: ProjectSettings['orientation']) {
+  const frameAspect = orientation === 'landscape' ? 16 / 9 : 9 / 16;
+  const imageAspect = width && height && width > 0 && height > 0 ? width / height : frameAspect;
+  if (imageAspect > frameAspect) {
+    return { width: '100%', height: `${roundCssNumber((frameAspect / imageAspect) * 100)}%` };
+  }
+  return { width: `${roundCssNumber((imageAspect / frameAspect) * 100)}%`, height: '100%' };
+}
+
+function roundCssNumber(value: number) {
+  return Math.round(value * 1000) / 1000;
 }
 
 function PreviewCard({
@@ -1008,12 +1433,92 @@ function PreviewCard({
   selectedLayer: LayerTarget;
   onSelect: () => void;
   onLayerSelect: (layer: LayerTarget) => void;
-  onLayerDrop: (layer: LayerTarget, x: number, y: number) => void;
+  onLayerDrop: (layer: LayerTarget, x: number, y: number, assetId?: string) => void;
 }) {
-  const frameRef = useRef<HTMLDivElement>(null);
-  const layer = variant.settings;
+  const artboardRef = useRef<HTMLDivElement>(null);
+  const layer = normalizeLayerSettings(variant.settings);
   const hand = getHandAsset(layer.handId);
   const ratio = orientation === 'landscape' ? '16 / 9' : '9 / 16';
+  const artboardStyle = getContainedArtboardStyle(variant.width, variant.height, orientation);
+  const orderedLayerMarkup = getLayerOrder(layer).map((target, index) => {
+    const zIndex = 5 + index;
+    if (target === 'scan' && layer.injectScan && layer.scanStyle !== 'none') {
+      return (
+        <span
+          key="scan"
+          className={`preview-scan scan-${layer.scanStyle} ${selectedLayer === 'scan' && selected ? 'active' : ''}`}
+          style={{
+            left: `${layer.scanX}%`,
+            top: `${layer.scanY}%`,
+            width: `${layer.scanSize}px`,
+            height: `${layer.scanSize}px`,
+            zIndex,
+            ['--scan-speed' as string]: `${layer.scanSpeed}ms`,
+          }}
+          onPointerDown={(event) => startDrag('scan', event)}
+        />
+      );
+    }
+
+    if (target === 'asset' && layer.injectAsset) {
+      return (
+        <span
+          key="asset"
+          className={`preview-asset asset-motion-${getVisualAsset(layer.assetId).motion} ${selectedLayer === 'asset' && selected ? 'active' : ''}`}
+          style={{
+            left: `${layer.assetX}%`,
+            top: `${layer.assetY}%`,
+            width: `${layer.assetSize}px`,
+            height: `${layer.assetSize}px`,
+            zIndex,
+            ['--asset-speed' as string]: `${layer.assetSpeed}ms`,
+          }}
+          onPointerDown={(event) => startDrag('asset', event)}
+        >
+          <VisualAssetIcon assetId={layer.assetId} />
+        </span>
+      );
+    }
+
+    if (target === 'hand' && layer.injectHand) {
+      return (
+        <img
+          key="hand"
+          className={`preview-hand motion-${layer.handMotion} ${selectedLayer === 'hand' && selected ? 'active' : ''}`}
+          src={hand.src}
+          alt=""
+          style={{
+            left: `${layer.handX}%`,
+            top: `${layer.handY}%`,
+            width: `${layer.handSize}px`,
+            zIndex,
+          }}
+          onPointerDown={(event) => startDrag('hand', event)}
+        />
+      );
+    }
+
+    if (target === 'cta' && layer.showCta) {
+      return (
+        <button
+          key="cta"
+          className={`preview-cta btn-${layer.buttonAnimation} ${selectedLayer === 'cta' && selected ? 'active' : ''}`}
+          type="button"
+          style={{
+            left: `${layer.ctaX}%`,
+            top: `${layer.ctaY}%`,
+            width: `${layer.ctaWidth}%`,
+            zIndex,
+          }}
+          onPointerDown={(event) => startDrag('cta', event)}
+        >
+          {layer.ctaText}
+        </button>
+      );
+    }
+
+    return null;
+  });
 
   const startDrag = (target: LayerTarget, event: ReactPointerEvent<HTMLElement>) => {
     event.preventDefault();
@@ -1022,8 +1527,8 @@ function PreviewCard({
     onLayerSelect(target);
 
     const update = (clientX: number, clientY: number) => {
-      if (!frameRef.current) return;
-      const point = getPointInElement(frameRef.current, clientX, clientY);
+      if (!artboardRef.current) return;
+      const point = getPointInElement(artboardRef.current, clientX, clientY);
       onLayerDrop(target, point.x, point.y);
     };
 
@@ -1037,12 +1542,12 @@ function PreviewCard({
     window.addEventListener('pointerup', end, { once: true });
   };
 
-  const placeLayer = (target: LayerTarget, clientX: number, clientY: number) => {
-    if (!frameRef.current) return;
-    const point = getPointInElement(frameRef.current, clientX, clientY);
+  const placeLayer = (target: LayerTarget, clientX: number, clientY: number, assetId?: string) => {
+    if (!artboardRef.current) return;
+    const point = getPointInElement(artboardRef.current, clientX, clientY);
     onSelect();
     onLayerSelect(target);
-    onLayerDrop(target, point.x, point.y);
+    onLayerDrop(target, point.x, point.y, assetId);
   };
 
   return (
@@ -1052,7 +1557,6 @@ function PreviewCard({
         <b>{Math.round(variant.hotspot.confidence * 100)}%</b>
       </div>
       <div
-        ref={frameRef}
         className="creative-frame"
         style={{ aspectRatio: ratio }}
         onDragOver={(event) => {
@@ -1061,56 +1565,28 @@ function PreviewCard({
         }}
         onDrop={(event) => {
           event.preventDefault();
-          const layerTarget = getLayerDragData(event) || selectedLayer;
-          placeLayer(layerTarget, event.clientX, event.clientY);
+          const assetId = getAssetDragData(event);
+          const layerTarget = assetId ? 'asset' : getLayerDragData(event) || selectedLayer;
+          placeLayer(layerTarget, event.clientX, event.clientY, assetId);
         }}
         onPointerDown={(event) => {
           const target = event.target as HTMLElement;
-          if (target !== event.currentTarget && !target.classList.contains('creative-image')) return;
+          if (
+            target !== event.currentTarget &&
+            !target.classList.contains('creative-image') &&
+            !target.classList.contains('creative-artboard') &&
+            !target.classList.contains('creative-backdrop')
+          ) {
+            return;
+          }
           placeLayer(selectedLayer, event.clientX, event.clientY);
         }}
       >
-        <img className="creative-image" src={variant.dataUrl} alt="" />
-        {layer.injectScan && layer.scanStyle !== 'none' && (
-          <span
-            className={`preview-scan scan-${layer.scanStyle} ${selectedLayer === 'scan' && selected ? 'active' : ''}`}
-            style={{
-              left: `${layer.scanX}%`,
-              top: `${layer.scanY}%`,
-              width: `${layer.scanSize}px`,
-              height: `${layer.scanSize}px`,
-              ['--scan-speed' as string]: `${layer.scanSpeed}ms`,
-            }}
-            onPointerDown={(event) => startDrag('scan', event)}
-          />
-        )}
-        {layer.injectHand && (
-          <img
-            className={`preview-hand motion-${layer.handMotion} ${selectedLayer === 'hand' && selected ? 'active' : ''}`}
-            src={hand.src}
-            alt=""
-            style={{
-              left: `${layer.handX}%`,
-              top: `${layer.handY}%`,
-              width: `${layer.handSize}px`,
-            }}
-            onPointerDown={(event) => startDrag('hand', event)}
-          />
-        )}
-        {layer.showCta && (
-          <button
-            className={`preview-cta btn-${layer.buttonAnimation} ${selectedLayer === 'cta' && selected ? 'active' : ''}`}
-            type="button"
-            style={{
-              left: `${layer.ctaX}%`,
-              top: `${layer.ctaY}%`,
-              width: `${layer.ctaWidth}%`,
-            }}
-            onPointerDown={(event) => startDrag('cta', event)}
-          >
-            {layer.ctaText}
-          </button>
-        )}
+        <img className="creative-backdrop" src={variant.dataUrl} alt="" />
+        <div ref={artboardRef} className="creative-artboard" style={artboardStyle}>
+          <img className="creative-image" src={variant.dataUrl} alt="" />
+          {orderedLayerMarkup}
+        </div>
       </div>
     </motion.article>
   );
@@ -1181,19 +1657,141 @@ function SourceState({ source }: { source: SourceItem }) {
   return <span className="source-state idle" />;
 }
 
+function normalizeLayerSettings(settings: Partial<LayerSettings>): LayerSettings {
+  const merged = {
+    ...defaultLayerSettings,
+    ...settings,
+  } as LayerSettings;
+  return {
+    ...merged,
+    layerOrder: getLayerOrder(merged),
+  };
+}
+
+function getLayerOrder(settings: Partial<LayerSettings>): LayerTarget[] {
+  const raw = Array.isArray(settings.layerOrder) ? settings.layerOrder : defaultLayerSettings.layerOrder;
+  const valid = raw.filter((layer): layer is LayerTarget => layer === 'hand' || layer === 'scan' || layer === 'asset' || layer === 'cta');
+  return ensureLayerInOrder(valid, 'scan', 'asset', 'hand', 'cta');
+}
+
+function ensureLayerInOrder(order: LayerTarget[], ...layers: LayerTarget[]) {
+  const next = order.filter((layer, index) => order.indexOf(layer) === index);
+  for (const layer of layers) {
+    if (!next.includes(layer)) next.push(layer);
+  }
+  return next;
+}
+
+function isLayerVisible(layer: LayerSettings, target: LayerTarget) {
+  if (target === 'hand') return layer.injectHand;
+  if (target === 'scan') return layer.injectScan && layer.scanStyle !== 'none';
+  if (target === 'asset') return layer.injectAsset;
+  return layer.showCta;
+}
+
+function layerIcon(target: LayerTarget) {
+  if (target === 'hand') return <Hand size={15} />;
+  if (target === 'scan') return <ScanLine size={15} />;
+  if (target === 'asset') return <Activity size={15} />;
+  return <MousePointerClick size={15} />;
+}
+
+function VisualAssetIcon({ assetId, loopPreview = false }: { assetId: string; loopPreview?: boolean }) {
+  const asset = getVisualAsset(assetId);
+  const className = `asset-preview asset-preview-${asset.id}${loopPreview ? ` asset-motion-${asset.motion}` : ''}`;
+  if (asset.category === 'counter') {
+    return (
+      <span className={className}>
+        <b>{asset.value || '86'}</b>
+        <small>{asset.id === 'counter-bpm' ? 'BPM' : asset.id === 'counter-countdown' ? 'tap' : 'score'}</small>
+      </span>
+    );
+  }
+
+  if (asset.id === 'ecg-wave-line') {
+    return (
+      <span className={`asset-preview asset-preview-ecg${loopPreview ? ` asset-motion-${asset.motion}` : ''}`}>
+        <i />
+      </span>
+    );
+  }
+
+  if (asset.id === 'heart-live-dot' || asset.id === 'status-normal') {
+    return (
+      <span className={className}>
+        <i />
+        <b>{asset.value || 'Live'}</b>
+      </span>
+    );
+  }
+
+  if (asset.category === 'scan') {
+    return (
+      <span className={className}>
+        <i />
+        {(asset.id === 'scan-food-card' || asset.id === 'scan-calorie-chip') && (
+          <>
+            <b>{asset.value || '690'}</b>
+            <small>kcal</small>
+          </>
+        )}
+      </span>
+    );
+  }
+
+  return (
+    <span className={className}>
+      <HeartPulse size={28} />
+      <b>{asset.value || ''}</b>
+    </span>
+  );
+}
+
 function layerFromHotspot(hotspot: Hotspot, index: number): LayerSettings {
-  const recipe = recipePresets[(index - 1) % recipePresets.length];
-  const targetX = Math.round(hotspot.x);
-  const targetY = Math.round(hotspot.y);
+  const recipe = selectRecipeForHotspot(hotspot, index);
+  const targetX = Math.round(clamp(hotspot.x, 12, 88));
+  const targetY = Math.round(clamp(hotspot.y, 18, 84));
+  const scanSize = targetY < 44 ? 164 : targetY > 74 ? 132 : 148;
+  const handSize = targetY > 76 ? 116 : 112;
   return {
     ...defaultLayerSettings,
     ...recipe.layer,
     handX: targetX,
     handY: targetY,
+    handSize: recipe.layer.handSize || handSize,
     scanX: targetX,
     scanY: targetY,
+    scanSize: recipe.layer.scanSize || scanSize,
     ctaX: 50,
     ctaY: targetY > 78 ? 90 : 88,
+  };
+}
+
+function selectRecipeForHotspot(hotspot: Hotspot, index: number) {
+  const lowerArea = hotspot.y > 74;
+  const upperArea = hotspot.y < 44;
+  const sideArea = hotspot.x < 34 || hotspot.x > 66;
+  const pool = lowerArea
+    ? ['cta-push', 'spark-hit', 'double-tap', 'shake-cta']
+    : upperArea
+      ? ['scan-sweep', 'wave-guide', 'border-lock', 'tap-target']
+      : sideArea
+        ? ['swipe-reveal', 'drag-focus', 'wave-guide', 'real-press']
+        : ['heart-pulse', 'tap-target', 'real-press', 'double-tap'];
+  const id = pool[(index - 1) % pool.length];
+  return recipePresets.find((recipe) => recipe.id === id) || recipePresets[(index - 1) % recipePresets.length];
+}
+
+function projectHotspotToFrame(
+  hotspot: Hotspot,
+  _dimensions: { width?: number; height?: number },
+  _orientation: ProjectSettings['orientation'],
+): Hotspot {
+  return {
+    ...hotspot,
+    x: clamp(hotspot.x, 8, 92),
+    y: clamp(hotspot.y, 12, 88),
+    reason: `${hotspot.reason || 'detected'}; contained artboard`,
   };
 }
 

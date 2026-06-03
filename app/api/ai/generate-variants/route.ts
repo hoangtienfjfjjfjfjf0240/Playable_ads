@@ -16,6 +16,7 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     const startedAt = Date.now();
+    if (body?.stream === true) return streamVariantResponse(body, startedAt);
     const { variants, errors } = await generateVariants(body);
     return NextResponse.json({ variants, errors, durationMs: Date.now() - startedAt });
   } catch (error) {
@@ -26,7 +27,17 @@ export async function POST(request: Request) {
   }
 }
 
-async function generateVariants(body: Record<string, unknown>) {
+type PreparedGeneration = {
+  apiKey: string;
+  provider: AiProvider;
+  model: string;
+  imageDataUrl: string;
+  prompt: string;
+  aspectRatio: string;
+  count: number;
+};
+
+function prepareGeneration(body: Record<string, unknown>): PreparedGeneration {
   const provider = parseAiProvider(body.provider);
   const apiKey = process.env.AI_API_KEY || process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error('AI_API_KEY is not configured on the server.');
@@ -34,10 +45,19 @@ async function generateVariants(body: Record<string, unknown>) {
   const imageDataUrl = String(body.imageDataUrl || '');
   if (!imageDataUrl.startsWith('data:image/')) throw new Error('A base64 image data URL is required.');
 
-  const count = Math.max(1, Math.min(4, Number(body.count || 4)));
-  const model = String(body.model || getDefaultModel(provider));
-  const prompt = String(body.prompt || '');
-  const aspectRatio = String(body.aspectRatio || '9:16');
+  return {
+    apiKey,
+    provider,
+    model: String(body.model || getDefaultModel(provider)),
+    imageDataUrl,
+    prompt: String(body.prompt || ''),
+    aspectRatio: String(body.aspectRatio || '9:16'),
+    count: Math.max(1, Math.min(4, Number(body.count || 4))),
+  };
+}
+
+async function generateVariants(body: Record<string, unknown>) {
+  const { apiKey, provider, model, imageDataUrl, prompt, aspectRatio, count } = prepareGeneration(body);
   const startedAt = Date.now();
   console.log(`[ai] generating ${count} variants in parallel with ${provider}:${model}`);
 
@@ -58,6 +78,56 @@ async function generateVariants(body: Record<string, unknown>) {
   if (!output.length) throw new Error(errors.join('; ') || 'AI generation returned no images.');
 
   return { variants: output, errors };
+}
+
+function streamVariantResponse(body: Record<string, unknown>, startedAt: number) {
+  const prepared = prepareGeneration(body);
+  const encoder = new TextEncoder();
+  let completed = 0;
+  let produced = 0;
+  const errors: string[] = [];
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const send = (payload: Record<string, unknown>) => {
+        controller.enqueue(encoder.encode(`${JSON.stringify(payload)}\n`));
+      };
+
+      console.log(
+        `[ai] streaming ${prepared.count} variants in parallel with ${prepared.provider}:${prepared.model}`,
+      );
+      send({ type: 'start', count: prepared.count });
+
+      Array.from({ length: prepared.count }).forEach((_, index) => {
+        generateOneVariant({ ...prepared, index, count: prepared.count })
+          .then((variant) => {
+            produced += 1;
+            send({ type: 'variant', index, variant });
+          })
+          .catch((error) => {
+            const message = `Variant ${index + 1}: ${getErrorMessage(error)}`;
+            errors.push(message);
+            send({ type: 'error', index, error: message });
+          })
+          .finally(() => {
+            completed += 1;
+            if (completed === prepared.count) {
+              const durationMs = Date.now() - startedAt;
+              console.log(`[ai] streamed ${produced}/${prepared.count} variants in ${durationMs}ms`);
+              send({ type: 'done', count: produced, errors, durationMs });
+              controller.close();
+            }
+          });
+      });
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Cache-Control': 'no-cache',
+    },
+  });
 }
 
 async function generateOneVariant({
@@ -144,9 +214,11 @@ function buildVariantPrompt(prompt: string, index: number, count: number, aspect
   return [
     `Create variant ${index + 1} of ${count} from the reference playable ad image.`,
     `Target aspect ratio: ${aspectRatio}.`,
+    `Use a full-bleed ${aspectRatio} mobile canvas that fills the entire image edge to edge.`,
     prompt,
     directions[index % directions.length],
     'Return a complete mobile ad creative image only.',
+    'Do not add letterboxing, pillarboxing, black bars, outer borders, padding, or empty margins.',
     'Do not include phone frames, editor UI, hand cursor, scan target boxes, timelines, or export controls.',
     'Leave a clean area near the lower third/lower quarter for a real CTA button and animation overlay.',
   ]

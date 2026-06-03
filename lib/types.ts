@@ -2,7 +2,7 @@ export type SourceKind = 'image' | 'html';
 
 export type SourceStatus = 'ready' | 'queued' | 'generating' | 'done' | 'error';
 
-export type NetworkTarget = 'applovin' | 'mintegral' | 'mraid';
+export type NetworkTarget = 'unity' | 'applovin' | 'google' | 'mintegral' | 'moloco' | 'mraid';
 
 export type Orientation = 'portrait' | 'landscape';
 
@@ -23,7 +23,11 @@ export type ScanStyle = 'sweep' | 'ring' | 'spotlight' | 'border' | 'spark' | 'n
 
 export type ButtonAnimation = 'pulse' | 'bounce' | 'shine' | 'shake' | 'breath' | 'none';
 
-export type LayerTarget = 'hand' | 'scan' | 'cta';
+export type LayerTarget = 'hand' | 'scan' | 'asset' | 'cta';
+
+export type VisualAssetCategory = 'heart' | 'scan' | 'counter';
+
+export type VisualAssetMotion = 'pulse' | 'sweep' | 'count' | 'blink' | 'wave';
 
 export interface Hotspot {
   x: number;
@@ -43,7 +47,17 @@ export interface HandAsset {
   license: string;
 }
 
+export interface VisualAsset {
+  id: string;
+  label: string;
+  note: string;
+  category: VisualAssetCategory;
+  motion: VisualAssetMotion;
+  value?: string;
+}
+
 export interface LayerSettings {
+  layerOrder: LayerTarget[];
   handId: string;
   handMotion: HandMotion;
   handX: number;
@@ -62,6 +76,12 @@ export interface LayerSettings {
   ctaWidth: number;
   showCta: boolean;
   buttonAnimation: ButtonAnimation;
+  assetId: string;
+  assetX: number;
+  assetY: number;
+  assetSize: number;
+  assetSpeed: number;
+  injectAsset: boolean;
 }
 
 export interface ProjectSettings {
