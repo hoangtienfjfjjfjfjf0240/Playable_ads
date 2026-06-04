@@ -1,4 +1,5 @@
-import type { ExportImageInput, LayerSettings, LayerTarget, NetworkTarget, Orientation, ProjectSettings } from './types';
+import type { ExportImageInput, ImageFit, LayerSettings, LayerTarget, NetworkTarget, Orientation, ProjectSettings } from './types';
+import { getHandAnchorOffset } from './hand-assets';
 import { getVisualAsset } from './visual-assets';
 
 export interface ImagePlayableExportInput {
@@ -9,6 +10,7 @@ export interface ImagePlayableExportInput {
   useClickTag: boolean;
   handDataUrl?: string;
   orientation?: Orientation;
+  imageFit?: ImageFit;
   previewMode?: boolean;
 }
 
@@ -43,6 +45,7 @@ export function createDefaultProjectSettings(): ProjectSettings {
     storeUrl: 'https://apps.apple.com/us/app/icardiac-heart-rate-health/id6468660073',
     network: 'applovin',
     orientation: 'portrait',
+    imageFit: 'cover',
     aiProvider: 'gemini-flash',
     useClickTag: true,
     replaceLinks: true,
@@ -59,12 +62,24 @@ export function generateImagePlayableHtml({
   useClickTag,
   handDataUrl,
   orientation = 'portrait',
+  imageFit = 'cover',
   previewMode = false,
 }: ImagePlayableExportInput) {
+  layer = withCtaCompanions(layer);
+  const handAnchorOffset = getHandAnchorOffset(layer.handId, layer.handSize);
+  const scanAnchorOffset = {
+    x: handAnchorOffset.x + layer.scanOffsetX,
+    y: handAnchorOffset.y + layer.scanOffsetY,
+  };
+  const scanFollowsFinger = shouldAnchorScanToFinger(layer);
+  const scanLeft = scanFollowsFinger ? 'calc(var(--target-x) + var(--hand-anchor-x))' : 'var(--scan-x)';
+  const scanTop = scanFollowsFinger ? 'calc(var(--target-y) + var(--hand-anchor-y))' : 'var(--scan-y)';
+  const scanIterations = layer.scanLoop === 'once' ? '1' : 'infinite';
+  const scanDirection = layer.scanLoop === 'pingpong' ? 'alternate' : 'normal';
   const frameAspect = orientation === 'landscape' ? 16 / 9 : 9 / 16;
   const frameWidthVh = roundCssNumber(frameAspect * 100);
   const frameHeightVw = roundCssNumber(100 / frameAspect);
-  const artboard = getContainedArtboard(image.width, image.height, orientation);
+  const artboard = imageFit === 'cover' ? { widthPercent: 100, heightPercent: 100 } : getContainedArtboard(image.width, image.height, orientation);
   const networkHeadMarkup = getNetworkHeadMarkup(network);
   const handMarkup =
     layer.injectHand && handDataUrl
@@ -102,15 +117,19 @@ export function generateImagePlayableHtml({
     html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#f1f4fb;font-family:Arial,Helvetica,sans-serif;-webkit-user-select:none;user-select:none}
     *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
     .ps-scene{position:fixed;inset:0;overflow:hidden;background:#f1f4fb;touch-action:manipulation}
-    .ps-frame{--target-x:${clamp(layer.handX, 0, 100)}%;--target-y:${clamp(layer.handY, 0, 100)}%;--scan-x:${clamp(layer.scanX, 0, 100)}%;--scan-y:${clamp(layer.scanY, 0, 100)}%;--asset-x:${clamp(layer.assetX, 0, 100)}%;--asset-y:${clamp(layer.assetY, 0, 100)}%;--cta-x:${clamp(layer.ctaX, 0, 100)}%;--cta-y:${clamp(layer.ctaY, 0, 100)}%;--hand-size:${clamp(layer.handSize, 32, 260)}px;--scan-size:${clamp(layer.scanSize, 48, 360)}px;--asset-size:${clamp(layer.assetSize, 48, 280)}px;--asset-speed:${clamp(layer.assetSpeed, 500, 5000)}ms;--scan-speed:${clamp(layer.scanSpeed, 400, 5000)}ms;--cta-width:${clamp(layer.ctaWidth, 44, 92)}%;--artboard-w:${artboard.widthPercent}%;--artboard-h:${artboard.heightPercent}%;position:absolute;left:50%;top:50%;width:min(100vw,${frameWidthVh}vh);height:min(100vh,${frameHeightVw}vw);transform:translate(-50%,-50%);overflow:hidden;background:#f1f4fb}
+    .ps-frame{--target-x:${clamp(layer.handX, 0, 100)}%;--target-y:${clamp(layer.handY, 0, 100)}%;--scan-x:${clamp(layer.scanX, 0, 100)}%;--scan-y:${clamp(layer.scanY, 0, 100)}%;--asset-x:${clamp(layer.assetX, 0, 100)}%;--asset-y:${clamp(layer.assetY, 0, 100)}%;--cta-x:${clamp(layer.ctaX, 0, 100)}%;--cta-y:${clamp(layer.ctaY, 0, 100)}%;--hand-size:${clamp(layer.handSize, 32, 260)}px;--scan-size:${clamp(layer.scanSize, 48, 360)}px;--asset-size:${clamp(layer.assetSize, 48, 280)}px;--asset-speed:${clamp(layer.assetSpeed, 500, 5000)}ms;--scan-speed:${clamp(layer.scanSpeed, 400, 5000)}ms;--scan-delay:${clamp(layer.scanDelay, 0, 3000)}ms;--scan-iterations:${scanIterations};--scan-direction:${scanDirection};--scan-scale-start:${clamp(layer.scanScaleStart, .2, 2)};--scan-scale-end:${clamp(layer.scanScaleEnd, .2, 3)};--scan-opacity-start:${clamp(layer.scanOpacityStart / 100, 0, 1)};--scan-opacity-end:${clamp(layer.scanOpacityEnd / 100, 0, 1)};--cta-width:${clamp(layer.ctaWidth, 44, 92)}%;--hand-anchor-x:${scanAnchorOffset.x}px;--hand-anchor-y:${scanAnchorOffset.y}px;--hand-rotation:${clamp(layer.handRotation || 0, -180, 180)}deg;--scan-rotation:${clamp(layer.scanRotation || 0, -180, 180)}deg;--asset-rotation:${clamp(layer.assetRotation || 0, -180, 180)}deg;--cta-rotation:${clamp(layer.ctaRotation || 0, -180, 180)}deg;--artboard-w:${artboard.widthPercent}%;--artboard-h:${artboard.heightPercent}%;position:absolute;left:50%;top:50%;width:min(100vw,${frameWidthVh}vh);height:min(100vh,${frameHeightVw}vw);transform:translate(-50%,-50%);overflow:hidden;background:#f1f4fb}
     .ps-backdrop{position:absolute;inset:-3%;width:106%;height:106%;object-fit:cover;filter:blur(18px) saturate(1.04);opacity:.34;transform:scale(1.02);display:block}
     .ps-artboard{position:absolute;left:50%;top:50%;width:var(--artboard-w);height:var(--artboard-h);transform:translate(-50%,-50%);overflow:hidden;background:#f1f4fb}
-    .ps-creative{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;display:block;background:#f1f4fb}
-    .ps-hand{position:absolute;left:var(--target-x);top:var(--target-y);width:var(--hand-size);z-index:6;pointer-events:none;filter:drop-shadow(0 9px 14px rgba(0,0,0,.32));transform:translate(-50%,-50%)}
-    .ps-scan{position:absolute;left:var(--scan-x);top:var(--scan-y);width:var(--scan-size);height:var(--scan-size);z-index:5;pointer-events:none;transform:translate(-50%,-50%)}
-    .ps-asset{position:absolute;left:var(--asset-x);top:var(--asset-y);width:var(--asset-size);height:var(--asset-size);display:grid;place-items:center;pointer-events:none;transform:translate(-50%,-50%)}
+    .ps-creative{position:absolute;inset:0;width:100%;height:100%;object-fit:${imageFit};display:block;background:#f1f4fb}
+    .ps-hand{position:absolute;left:var(--target-x);top:var(--target-y);width:var(--hand-size);z-index:6;pointer-events:none;filter:drop-shadow(0 9px 14px rgba(0,0,0,.32));transform:translate(-50%,-50%);rotate:var(--hand-rotation)}
+    .ps-scan{position:absolute;left:${scanLeft};top:${scanTop};width:var(--scan-size);height:var(--scan-size);z-index:5;pointer-events:none;transform:translate(-50%,-50%);rotate:var(--scan-rotation)}
+    .ps-asset{position:absolute;left:var(--asset-x);top:var(--asset-y);width:var(--asset-size);height:var(--asset-size);display:grid;place-items:center;pointer-events:none;transform:translate(-50%,-50%);rotate:var(--asset-rotation)}
     .ps-asset .asset-preview{position:relative;width:100%;height:100%;display:grid;place-items:center;overflow:visible;border:0;border-radius:0;color:#e11d48;background:transparent;box-shadow:none}
     .ps-asset .asset-preview b{font-size:clamp(14px,18%,28px);font-weight:900;line-height:1}.ps-asset .asset-preview small{font-size:10px;color:#626b7a;font-weight:800}.ps-asset .asset-preview-ecg,.ps-asset .asset-preview-scan-grid,.ps-asset .asset-preview-scan-crop-box,.ps-asset .asset-preview-scan-photo-frame{border-radius:12px}.asset-preview-ecg i{width:78%;height:54%;background:linear-gradient(135deg,transparent 0 20%,#e11d48 21% 24%,transparent 25% 36%,#e11d48 37% 40%,transparent 41% 54%,#e11d48 55% 58%,transparent 59%),linear-gradient(90deg,rgba(225,29,72,.18) 1px,transparent 1px);background-size:100% 100%,10px 10px}.asset-preview-heart-live-dot,.asset-preview-status-normal{display:inline-flex;gap:6px;padding:0 8px;width:auto;min-width:54px;color:#0f9f6e}.asset-preview-heart-live-dot i,.asset-preview-status-normal i{width:9px;height:9px;border-radius:999px;background:currentColor;box-shadow:0 0 0 5px rgba(15,159,110,.12)}.asset-preview-scan-reticle i,.asset-preview-scan-grid i,.asset-preview-scan-beam i{width:62%;height:62%;border:2px solid #28a5ff;border-radius:999px;box-shadow:0 0 0 7px rgba(37,99,235,.1),inset 0 0 0 1px rgba(37,99,235,.25)}.asset-preview-scan-grid i{border-radius:8px;background:linear-gradient(90deg,rgba(37,99,235,.18) 1px,transparent 1px),linear-gradient(180deg,rgba(37,99,235,.18) 1px,transparent 1px);background-size:8px 8px}.asset-preview-scan-beam i:after,.asset-preview-scan-vertical-beam i:after{content:"";position:absolute;top:18%;bottom:18%;left:48%;width:3px;background:#28a5ff;box-shadow:0 0 12px #28a5ff}.asset-preview-scan-food-card,.asset-preview-scan-calorie-chip{align-items:end;justify-items:end;padding:6px;color:#e11d48}.asset-preview-scan-food-card i,.asset-preview-scan-crop-box i,.asset-preview-scan-photo-frame i{position:absolute;left:12%;top:14%;width:58%;height:52%;border:2px solid rgba(255,255,255,.95);border-radius:8px;background:radial-gradient(circle at 34% 42%,#fde68a 0 13%,transparent 14%),radial-gradient(circle at 70% 52%,#86efac 0 14%,transparent 15%),linear-gradient(135deg,#fecaca,#bfdbfe);box-shadow:0 0 0 1px rgba(37,99,235,.26),0 0 18px rgba(37,99,235,.28)}.asset-preview-scan-food-card b,.asset-preview-scan-calorie-chip b{position:relative;z-index:1;padding:3px 5px;border-radius:7px;color:#e11d48;background:#fff;font-size:12px;box-shadow:0 1px 3px rgba(15,23,42,.14)}.asset-preview-scan-food-card small,.asset-preview-scan-calorie-chip small{position:absolute;right:8px;bottom:3px;z-index:1}.asset-preview-scan-corner-lock i{width:62%;height:48%;border-radius:8px;background:linear-gradient(#28a5ff,#28a5ff) left top/14px 3px no-repeat,linear-gradient(#28a5ff,#28a5ff) left top/3px 14px no-repeat,linear-gradient(#28a5ff,#28a5ff) right top/14px 3px no-repeat,linear-gradient(#28a5ff,#28a5ff) right top/3px 14px no-repeat,linear-gradient(#28a5ff,#28a5ff) left bottom/14px 3px no-repeat,linear-gradient(#28a5ff,#28a5ff) left bottom/3px 14px no-repeat,linear-gradient(#28a5ff,#28a5ff) right bottom/14px 3px no-repeat,linear-gradient(#28a5ff,#28a5ff) right bottom/3px 14px no-repeat}.asset-preview-scan-nutrition-arrow i{width:48%;height:48%;border-right:4px solid #ef4444;border-bottom:4px solid #ef4444;border-radius:0 0 18px 0;transform:rotate(8deg)}.asset-preview-scan-nutrition-arrow i:after{content:"";position:absolute;right:-8px;bottom:-7px;border-top:7px solid #ef4444;border-left:7px solid transparent;border-right:7px solid transparent;transform:rotate(-38deg)}.asset-preview-scan-barcode i{width:66%;height:48%;border-radius:6px;background:linear-gradient(90deg,#111827 0 3px,transparent 3px 6px,#111827 6px 8px,transparent 8px 12px,#111827 12px 16px,transparent 16px 19px,#111827 19px 22px,transparent 22px 26px,#111827 26px 28px,transparent 28px 33px,#111827 33px 38px,transparent 38px),#fff;box-shadow:inset 0 0 0 2px rgba(37,99,235,.24)}.asset-preview-scan-vertical-beam i{width:66%;height:52%;border:2px solid rgba(37,99,235,.35);border-radius:8px;background:rgba(219,234,254,.72)}.asset-preview-scan-radar-sweep i{width:62%;height:62%;border-radius:999px;background:conic-gradient(from 40deg,rgba(37,99,235,.05),rgba(37,99,235,.82),rgba(37,99,235,.05) 34%,transparent 35%);border:2px solid rgba(37,99,235,.44);box-shadow:inset 0 0 0 7px rgba(37,99,235,.08),0 0 18px rgba(37,99,235,.28)}.asset-motion-pulse{animation:psAssetPulse var(--asset-speed) ease-in-out infinite}.asset-motion-blink{animation:psAssetBlink var(--asset-speed) steps(2,end) infinite}.asset-motion-sweep .asset-preview:after{content:"";position:absolute;top:-18%;bottom:-18%;left:-20%;width:5px;background:linear-gradient(180deg,transparent,rgba(37,99,235,.82),transparent);box-shadow:0 0 18px rgba(37,99,235,.72);animation:psAssetSweep var(--asset-speed) linear infinite}.asset-motion-wave .asset-preview i{animation:psAssetWave var(--asset-speed) ease-in-out infinite}.asset-motion-count .asset-preview{animation:psAssetCount var(--asset-speed) ease-in-out infinite}
+    .scan-ripple{border:3px solid rgba(125,221,255,.9);border-radius:999px;background:transparent;box-shadow:0 0 0 0 rgba(125,221,255,.42),0 0 22px rgba(125,221,255,.46);animation-name:psRipple;animation-duration:var(--scan-speed);animation-timing-function:ease-out;animation-delay:var(--scan-delay);animation-iteration-count:var(--scan-iterations);animation-direction:var(--scan-direction);animation-fill-mode:both;animation-play-state:${layer.scanAutoplay ? 'running' : 'paused'}}
+    .scan-ripple:after{content:"";position:absolute;inset:-10px;border:2px solid rgba(125,221,255,.48);border-radius:inherit;animation-name:psRippleHalo;animation-duration:var(--scan-speed);animation-timing-function:ease-out;animation-delay:var(--scan-delay);animation-iteration-count:var(--scan-iterations);animation-direction:var(--scan-direction);animation-fill-mode:both}
+    .scan-face{border:0;border-radius:12px;background:linear-gradient(#3b82f6,#3b82f6) left top/26% 3px no-repeat,linear-gradient(#3b82f6,#3b82f6) left top/3px 26% no-repeat,linear-gradient(#3b82f6,#3b82f6) right top/26% 3px no-repeat,linear-gradient(#3b82f6,#3b82f6) right top/3px 26% no-repeat,linear-gradient(#3b82f6,#3b82f6) left bottom/26% 3px no-repeat,linear-gradient(#3b82f6,#3b82f6) left bottom/3px 26% no-repeat,linear-gradient(#3b82f6,#3b82f6) right bottom/26% 3px no-repeat,linear-gradient(#3b82f6,#3b82f6) right bottom/3px 26% no-repeat;box-shadow:none;animation:psFaceScan var(--scan-speed) ease-in-out infinite}
+    .scan-face:after{content:"";position:absolute;left:16%;right:16%;top:50%;height:2px;background:linear-gradient(90deg,transparent,rgba(59,130,246,.9),transparent);box-shadow:0 0 12px rgba(59,130,246,.6);animation:psFaceLine var(--scan-speed) ease-in-out infinite}
     .scan-sweep{overflow:hidden;border:2px solid rgba(255,255,255,.78);border-radius:16px;background:rgba(31,182,255,.08);box-shadow:0 0 24px rgba(0,194,255,.34)}
     .scan-sweep:after{content:"";position:absolute;top:-20%;bottom:-20%;width:5px;left:-16%;background:linear-gradient(180deg,transparent,#fff,transparent);box-shadow:0 0 18px #00d5ff;animation:psSweep var(--scan-speed) linear infinite}
     .scan-ring{border:4px solid rgba(255,255,255,.92);border-radius:999px;box-shadow:0 0 0 0 rgba(0,213,255,.48),0 0 30px rgba(0,213,255,.34);animation:psRing var(--scan-speed) ease-out infinite}
@@ -120,10 +139,10 @@ export function generateImagePlayableHtml({
     .scan-border:before{left:0;top:0;width:38%;height:4px;animation:psBorderH var(--scan-speed) linear infinite}
     .scan-border:after{right:0;top:0;width:4px;height:38%;animation:psBorderV var(--scan-speed) linear infinite}
     .scan-spark{border-radius:999px;background:rgba(255,243,196,.26);box-shadow:0 0 0 0 rgba(245,158,11,.58),0 0 28px rgba(245,158,11,.52);animation:psSpark var(--scan-speed) ease-out infinite}
-    .ps-cta{position:absolute;left:var(--cta-x);top:var(--cta-y);z-index:8;width:var(--cta-width);max-width:88%;min-height:54px;padding:0 22px;border:0;border-radius:10px;background:linear-gradient(180deg,#ff8a1f,#f45100);color:#fff;font-size:19px;font-weight:900;letter-spacing:0;text-align:center;box-shadow:0 12px 24px rgba(0,0,0,.30);transform:translate(-50%,-50%);cursor:pointer}
+    .ps-cta{position:absolute;left:var(--cta-x);top:var(--cta-y);z-index:8;width:var(--cta-width);max-width:88%;min-height:54px;padding:0 22px;border:0;border-radius:10px;background:linear-gradient(180deg,#ff8a1f,#f45100);color:#fff;font-size:19px;font-weight:900;letter-spacing:0;text-align:center;box-shadow:0 12px 24px rgba(0,0,0,.30);transform:translate(-50%,-50%);rotate:var(--cta-rotation);cursor:pointer}
     .btn-pulse{animation:psCtaPulse 1.08s ease-in-out infinite}.btn-bounce{animation:psCtaBounce .95s ease-in-out infinite}.btn-shake{animation:psCtaShake .48s ease-in-out infinite}.btn-breath{animation:psCtaBreath 1.15s ease-in-out infinite}.btn-shine{overflow:hidden;background:#f45100}.btn-shine:after{content:"";position:absolute;inset:0;background:linear-gradient(110deg,transparent 0%,rgba(255,255,255,.58) 45%,transparent 70%);transform:translateX(-120%);animation:psCtaShine 1.25s linear infinite}
     .motion-tap{animation:psHandTap 1.05s ease-in-out infinite}.motion-doubleTap{animation:psHandDoubleTap 1.18s ease-in-out infinite}.motion-press{animation:psHandPress 1.05s ease-in-out infinite}.motion-bounce{animation:psHandBounce 1s ease-in-out infinite}.motion-swipeX{animation:psHandSwipeX 1.15s ease-in-out infinite}.motion-swipeY{animation:psHandSwipeY 1.15s ease-in-out infinite}.motion-drag{animation:psHandDrag 1.35s ease-in-out infinite}.motion-shake{animation:psHandShake .62s ease-in-out infinite}.motion-wave{animation:psHandWave 1.08s ease-in-out infinite}
-    @keyframes psSweep{0%{left:-16%}100%{left:116%}}@keyframes psRing{0%{transform:translate(-50%,-50%) scale(.72);opacity:1;box-shadow:0 0 0 0 rgba(0,213,255,.52)}100%{transform:translate(-50%,-50%) scale(1.18);opacity:.08;box-shadow:0 0 0 24px rgba(0,213,255,0)}}@keyframes psSpot{0%,100%{transform:translate(-50%,-50%) scale(.92);opacity:.88}50%{transform:translate(-50%,-50%) scale(1.08);opacity:1}}@keyframes psBorderH{0%{left:0}50%{left:62%}100%{left:0}}@keyframes psBorderV{0%{top:0}50%{top:62%}100%{top:0}}@keyframes psSpark{0%{transform:translate(-50%,-50%) scale(.55);opacity:1;box-shadow:0 0 0 0 rgba(245,158,11,.56)}100%{transform:translate(-50%,-50%) scale(1.35);opacity:0;box-shadow:0 0 0 26px rgba(245,158,11,0)}}
+    @keyframes psSweep{0%{left:-16%}100%{left:116%}}@keyframes psRipple{0%{opacity:var(--scan-opacity-start);transform:translate(-50%,-50%) scale(var(--scan-scale-start));box-shadow:0 0 0 0 rgba(125,221,255,.42),0 0 18px rgba(125,221,255,.42)}72%{box-shadow:0 0 0 18px rgba(125,221,255,0),0 0 28px rgba(125,221,255,.5)}100%{opacity:var(--scan-opacity-end);transform:translate(-50%,-50%) scale(var(--scan-scale-end));box-shadow:0 0 0 24px rgba(125,221,255,0),0 0 18px rgba(125,221,255,.2)}}@keyframes psRippleHalo{0%{transform:scale(var(--scan-scale-start));opacity:var(--scan-opacity-start)}100%{transform:scale(var(--scan-scale-end));opacity:var(--scan-opacity-end)}}@keyframes psFaceScan{0%,100%{transform:translate(-50%,-50%) scale(.98);opacity:.88}50%{transform:translate(-50%,-50%) scale(1.04);opacity:1}}@keyframes psFaceLine{0%{top:18%;opacity:.18}50%{opacity:1}100%{top:82%;opacity:.18}}@keyframes psRing{0%{transform:translate(-50%,-50%) scale(.72);opacity:1;box-shadow:0 0 0 0 rgba(0,213,255,.52)}100%{transform:translate(-50%,-50%) scale(1.18);opacity:.08;box-shadow:0 0 0 24px rgba(0,213,255,0)}}@keyframes psSpot{0%,100%{transform:translate(-50%,-50%) scale(.92);opacity:.88}50%{transform:translate(-50%,-50%) scale(1.08);opacity:1}}@keyframes psBorderH{0%{left:0}50%{left:62%}100%{left:0}}@keyframes psBorderV{0%{top:0}50%{top:62%}100%{top:0}}@keyframes psSpark{0%{transform:translate(-50%,-50%) scale(.55);opacity:1;box-shadow:0 0 0 0 rgba(245,158,11,.56)}100%{transform:translate(-50%,-50%) scale(1.35);opacity:0;box-shadow:0 0 0 26px rgba(245,158,11,0)}}
     @keyframes psAssetPulse{0%,100%{transform:translate(-50%,-50%) scale(1)}50%{transform:translate(-50%,-50%) scale(1.08)}}@keyframes psAssetBlink{0%,100%{opacity:1}50%{opacity:.46}}@keyframes psAssetSweep{0%{left:-20%}100%{left:118%}}@keyframes psAssetWave{0%,100%{transform:translateX(-7%)}50%{transform:translateX(7%)}}@keyframes psAssetCount{0%,100%{transform:scale(1)}50%{transform:scale(1.08)}}
     @keyframes psHandTap{0%,100%{transform:translate(-50%,-50%) scale(1)}45%{transform:translate(-50%,-50%) scale(.82)}}@keyframes psHandDoubleTap{0%,100%{transform:translate(-50%,-50%) scale(1)}22%,58%{transform:translate(-50%,-50%) scale(.82)}35%,72%{transform:translate(-50%,-50%) scale(1.03)}}@keyframes psHandPress{0%,100%{transform:translate(-50%,-50%) scale(1)}55%{transform:translate(-50%,-50%) scale(.72);filter:drop-shadow(0 4px 7px rgba(0,0,0,.36))}}@keyframes psHandBounce{0%,100%{transform:translate(-50%,-50%) translateY(0)}50%{transform:translate(-50%,-50%) translateY(-18px)}}@keyframes psHandSwipeX{0%,100%{transform:translate(-74%,-50%)}50%{transform:translate(-28%,-50%)}}@keyframes psHandSwipeY{0%,100%{transform:translate(-50%,-74%)}50%{transform:translate(-50%,-28%)}}@keyframes psHandDrag{0%,100%{transform:translate(-72%,-58%) scale(.96)}50%{transform:translate(-28%,-42%) scale(.9)}}@keyframes psHandShake{0%,100%{transform:translate(-50%,-50%) rotate(0)}25%{transform:translate(-50%,-50%) rotate(-8deg)}75%{transform:translate(-50%,-50%) rotate(8deg)}}@keyframes psHandWave{0%,100%{transform:translate(-50%,-50%) rotate(-9deg)}50%{transform:translate(-50%,-50%) rotate(12deg)}}
     @keyframes psCtaPulse{0%,100%{transform:translate(-50%,-50%) scale(1)}50%{transform:translate(-50%,-50%) scale(1.06)}}@keyframes psCtaBounce{0%,100%{transform:translate(-50%,-50%) translateY(0)}50%{transform:translate(-50%,-50%) translateY(-8px)}}@keyframes psCtaShake{0%,100%{transform:translate(-50%,-50%)}25%{transform:translate(calc(-50% - 5px),-50%)}75%{transform:translate(calc(-50% + 5px),-50%)}}@keyframes psCtaBreath{0%,100%{filter:brightness(1)}50%{filter:brightness(1.18)}}@keyframes psCtaShine{0%{transform:translateX(-120%)}100%{transform:translateX(120%)}}
@@ -178,6 +197,7 @@ export function patchPlayableHtml({
   handDataUrl,
   previewMode = false,
 }: HtmlPatchInput) {
+  layer = withCtaCompanions(layer);
   let out = stripPreviousInjection(html);
 
   if (replaceLinks && storeUrl) {
@@ -278,7 +298,7 @@ function injectCtaPosition(html: string, layer: LayerSettings, selector: string)
   const safeSelector = selector.trim() || 'button';
   const code = `
 <style id="ps-cta-position-style">
-.ps-cta-positioned{position:fixed!important;left:${clamp(layer.ctaX, 0, 100)}vw!important;top:${clamp(layer.ctaY, 0, 100)}vh!important;right:auto!important;bottom:auto!important;z-index:2147482999!important;transform:translate(-50%,-50%)!important}
+.ps-cta-positioned{position:fixed!important;left:${clamp(layer.ctaX, 0, 100)}vw!important;top:${clamp(layer.ctaY, 0, 100)}vh!important;right:auto!important;bottom:auto!important;z-index:2147482999!important;transform:translate(-50%,-50%)!important;rotate:${clamp(layer.ctaRotation || 0, -180, 180)}deg!important}
 .ps-cta-positioned.ps-btn-anim-pulse{animation:psPulsePos 1.1s infinite ease-in-out!important}
 .ps-cta-positioned.ps-btn-anim-bounce{animation:psBouncePos .9s infinite ease-in-out!important}
 .ps-cta-positioned.ps-btn-anim-shake{animation:psShakePos .45s infinite ease-in-out!important}
@@ -301,15 +321,32 @@ function injectCtaPosition(html: string, layer: LayerSettings, selector: string)
 }
 
 function injectScan(html: string, layer: LayerSettings) {
+  const handAnchorOffset = getHandAnchorOffset(layer.handId, layer.handSize);
+  const anchorOffset = {
+    x: handAnchorOffset.x + layer.scanOffsetX,
+    y: handAnchorOffset.y + layer.scanOffsetY,
+  };
+  const scanLeft = shouldAnchorScanToFinger(layer) ? `calc(${clamp(layer.handX, 0, 100)}vw + ${anchorOffset.x}px)` : `${clamp(layer.scanX, 0, 100)}vw`;
+  const scanTop = shouldAnchorScanToFinger(layer) ? `calc(${clamp(layer.handY, 0, 100)}vh + ${anchorOffset.y}px)` : `${clamp(layer.scanY, 0, 100)}vh`;
+  const scanIterations = layer.scanLoop === 'once' ? '1' : 'infinite';
+  const scanDirection = layer.scanLoop === 'pingpong' ? 'alternate' : 'normal';
   const code = `
 <style id="ps-scan-style">
+@keyframes psScanRipple{0%{opacity:${clamp(layer.scanOpacityStart / 100, 0, 1)};transform:translate(-50%,-50%) scale(${clamp(layer.scanScaleStart, .2, 2)});box-shadow:0 0 0 0 rgba(125,221,255,.42),0 0 18px rgba(125,221,255,.42)}72%{box-shadow:0 0 0 18px rgba(125,221,255,0),0 0 28px rgba(125,221,255,.5)}100%{opacity:${clamp(layer.scanOpacityEnd / 100, 0, 1)};transform:translate(-50%,-50%) scale(${clamp(layer.scanScaleEnd, .2, 3)});box-shadow:0 0 0 24px rgba(125,221,255,0),0 0 18px rgba(125,221,255,.2)}}
+@keyframes psScanRippleHalo{0%{transform:scale(${clamp(layer.scanScaleStart, .2, 2)});opacity:${clamp(layer.scanOpacityStart / 100, 0, 1)}}100%{transform:scale(${clamp(layer.scanScaleEnd, .2, 3)});opacity:${clamp(layer.scanOpacityEnd / 100, 0, 1)}}}
+@keyframes psScanFace{0%,100%{transform:translate(-50%,-50%) scale(.98);opacity:.88}50%{transform:translate(-50%,-50%) scale(1.04);opacity:1}}
+@keyframes psScanFaceLine{0%{top:18%;opacity:.18}50%{opacity:1}100%{top:82%;opacity:.18}}
 @keyframes psScanSweep{0%{left:-16%}100%{left:116%}}
 @keyframes psScanRing{0%{transform:translate(-50%,-50%) scale(.72);opacity:1;box-shadow:0 0 0 0 rgba(0,213,255,.52)}100%{transform:translate(-50%,-50%) scale(1.18);opacity:.08;box-shadow:0 0 0 24px rgba(0,213,255,0)}}
 @keyframes psScanSpot{0%,100%{transform:translate(-50%,-50%) scale(.92);opacity:.88}50%{transform:translate(-50%,-50%) scale(1.08);opacity:1}}
 @keyframes psScanBorderH{0%{left:0}50%{left:62%}100%{left:0}}
 @keyframes psScanBorderV{0%{top:0}50%{top:62%}100%{top:0}}
 @keyframes psScanSpark{0%{transform:translate(-50%,-50%) scale(.55);opacity:1;box-shadow:0 0 0 0 rgba(245,158,11,.56)}100%{transform:translate(-50%,-50%) scale(1.35);opacity:0;box-shadow:0 0 0 26px rgba(245,158,11,0)}}
-#ps-scan-effect{position:fixed;left:${clamp(layer.scanX, 0, 100)}vw;top:${clamp(layer.scanY, 0, 100)}vh;width:${clamp(layer.scanSize, 48, 360)}px;height:${clamp(layer.scanSize, 48, 360)}px;z-index:2147482998;pointer-events:none;transform:translate(-50%,-50%)}
+#ps-scan-effect{position:fixed;left:${scanLeft};top:${scanTop};width:${clamp(layer.scanSize, 48, 360)}px;height:${clamp(layer.scanSize, 48, 360)}px;z-index:2147482998;pointer-events:none;transform:translate(-50%,-50%);rotate:${clamp(layer.scanRotation || 0, -180, 180)}deg}
+#ps-scan-effect.scan-ripple{border:3px solid rgba(125,221,255,.9);border-radius:999px;background:transparent;box-shadow:0 0 0 0 rgba(125,221,255,.42),0 0 22px rgba(125,221,255,.46);animation:psScanRipple ${clamp(layer.scanSpeed, 400, 5000)}ms ease-out ${clamp(layer.scanDelay, 0, 3000)}ms ${scanIterations} ${scanDirection} both;animation-play-state:${layer.scanAutoplay ? 'running' : 'paused'}}
+#ps-scan-effect.scan-ripple:after{content:"";position:absolute;inset:-10px;border:2px solid rgba(125,221,255,.48);border-radius:inherit;animation:psScanRippleHalo ${clamp(layer.scanSpeed, 400, 5000)}ms ease-out ${clamp(layer.scanDelay, 0, 3000)}ms ${scanIterations} ${scanDirection} both}
+#ps-scan-effect.scan-face{border:0;border-radius:12px;background:linear-gradient(#3b82f6,#3b82f6) left top/26% 3px no-repeat,linear-gradient(#3b82f6,#3b82f6) left top/3px 26% no-repeat,linear-gradient(#3b82f6,#3b82f6) right top/26% 3px no-repeat,linear-gradient(#3b82f6,#3b82f6) right top/3px 26% no-repeat,linear-gradient(#3b82f6,#3b82f6) left bottom/26% 3px no-repeat,linear-gradient(#3b82f6,#3b82f6) left bottom/3px 26% no-repeat,linear-gradient(#3b82f6,#3b82f6) right bottom/26% 3px no-repeat,linear-gradient(#3b82f6,#3b82f6) right bottom/3px 26% no-repeat;box-shadow:none;animation:psScanFace ${clamp(layer.scanSpeed, 400, 5000)}ms ease-in-out infinite}
+#ps-scan-effect.scan-face:after{content:"";position:absolute;left:16%;right:16%;top:50%;height:2px;background:linear-gradient(90deg,transparent,rgba(59,130,246,.9),transparent);box-shadow:0 0 12px rgba(59,130,246,.6);animation:psScanFaceLine ${clamp(layer.scanSpeed, 400, 5000)}ms ease-in-out infinite}
 #ps-scan-effect.scan-sweep{overflow:hidden;border:2px solid rgba(255,255,255,.78);border-radius:16px;background:rgba(31,182,255,.08);box-shadow:0 0 24px rgba(0,194,255,.34)}
 #ps-scan-effect.scan-sweep:after{content:"";position:absolute;top:-20%;bottom:-20%;width:5px;left:-16%;background:linear-gradient(180deg,transparent,#fff,transparent);box-shadow:0 0 18px #00d5ff;animation:psScanSweep ${clamp(layer.scanSpeed, 400, 5000)}ms linear infinite}
 #ps-scan-effect.scan-ring{border:4px solid rgba(255,255,255,.92);border-radius:999px;box-shadow:0 0 0 0 rgba(0,213,255,.48),0 0 30px rgba(0,213,255,.34);animation:psScanRing ${clamp(layer.scanSpeed, 400, 5000)}ms ease-out infinite}
@@ -336,7 +373,7 @@ function injectHand(html: string, layer: LayerSettings, handDataUrl: string) {
 @keyframes psHandDrag{0%,100%{transform:translate(-72%,-58%) scale(.96)}50%{transform:translate(-28%,-42%) scale(.9)}}
 @keyframes psHandShake{0%,100%{transform:translate(-50%,-50%) rotate(0)}25%{transform:translate(-50%,-50%) rotate(-8deg)}75%{transform:translate(-50%,-50%) rotate(8deg)}}
 @keyframes psHandWave{0%,100%{transform:translate(-50%,-50%) rotate(-9deg)}50%{transform:translate(-50%,-50%) rotate(12deg)}}
-#ps-hand-click{position:fixed;left:${clamp(layer.handX, 0, 100)}vw;top:${clamp(layer.handY, 0, 100)}vh;width:${clamp(layer.handSize, 32, 260)}px;z-index:2147483000;pointer-events:none;filter:drop-shadow(0 8px 14px rgba(0,0,0,.28));animation:psHand${animName(layer.handMotion)} 1.1s infinite ease-in-out}
+#ps-hand-click{position:fixed;left:${clamp(layer.handX, 0, 100)}vw;top:${clamp(layer.handY, 0, 100)}vh;width:${clamp(layer.handSize, 32, 260)}px;z-index:2147483000;pointer-events:none;filter:drop-shadow(0 8px 14px rgba(0,0,0,.28));rotate:${clamp(layer.handRotation || 0, -180, 180)}deg;animation:psHand${animName(layer.handMotion)} 1.1s infinite ease-in-out}
 </style>
 <img id="ps-hand-click" src="${handDataUrl}" alt="">`;
   return insertBeforeBody(html, code);
@@ -396,16 +433,46 @@ function animName(anim: LayerSettings['handMotion']) {
 }
 
 function getLayerOrder(layer: LayerSettings): LayerTarget[] {
-  const raw = Array.isArray(layer.layerOrder) ? layer.layerOrder : ['scan', 'asset', 'hand', 'cta'];
+  const raw = Array.isArray(layer.layerOrder) ? layer.layerOrder : ['scan', 'asset', 'cta', 'hand'];
   const valid = raw.filter((target): target is LayerTarget => target === 'scan' || target === 'asset' || target === 'hand' || target === 'cta');
-  for (const target of ['scan', 'asset', 'hand', 'cta'] as LayerTarget[]) {
+  for (const target of ['scan', 'asset', 'cta', 'hand'] as LayerTarget[]) {
     if (!valid.includes(target)) valid.push(target);
   }
-  return valid;
+  return keepHandAboveCta(valid);
 }
 
 function getLayerZ(layer: LayerSettings, target: LayerTarget) {
   return 5 + Math.max(0, getLayerOrder(layer).indexOf(target));
+}
+
+function shouldAnchorScanToFinger(layer: LayerSettings) {
+  return layer.ctaScanGrouped && layer.injectHand && layer.injectScan;
+}
+
+function withCtaCompanions(layer: LayerSettings): LayerSettings {
+  const next = {
+    ...layer,
+    ctaScanGrouped: layer.ctaScanGrouped !== false,
+  };
+
+  if (next.ctaScanGrouped && next.injectHand) {
+    next.scanX = next.handX;
+    next.scanY = next.handY;
+    next.injectScan = true;
+  }
+
+  next.layerOrder = getLayerOrder(next);
+  return next;
+}
+
+function keepHandAboveCta(order: LayerTarget[]) {
+  const handIndex = order.indexOf('hand');
+  const ctaIndex = order.indexOf('cta');
+  if (handIndex < 0 || ctaIndex < 0 || handIndex > ctaIndex) return order;
+  const next: LayerTarget[] = order.filter((target) => target !== 'hand');
+  const nextCtaIndex = next.indexOf('cta');
+  next.splice(nextCtaIndex + 1, 0, 'hand');
+  return next;
 }
 
 function renderVisualAssetMarkup(assetId: string) {

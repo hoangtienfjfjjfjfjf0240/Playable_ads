@@ -21,7 +21,11 @@ import {
   History,
   ImagePlus,
   Layers3,
+  Link2,
+  Lock,
   Loader2,
+  Maximize2,
+  Minimize2,
   MousePointerClick,
   Play,
   RefreshCw,
@@ -31,6 +35,8 @@ import {
   Sparkles,
   Trash2,
   Upload,
+  Unlink2,
+  Unlock,
   WandSparkles,
   X,
 } from 'lucide-react';
@@ -46,7 +52,7 @@ import {
   patchPlayableHtml,
   safeFileName,
 } from '../lib/export-engine';
-import { getHandAsset, handAssets } from '../lib/hand-assets';
+import { getHandAnchorOffset, getHandAsset, handAssets } from '../lib/hand-assets';
 import { detectImageHotspot, getImageDimensions, loadAssetAsDataUrl, readFileAsDataUrl, readFileAsText } from '../lib/image-utils';
 import { buttonPresets, defaultLayerSettings, handMotionPresets, recipePresets, scanPresets } from '../lib/presets';
 import { getVisualAsset, visualAssets } from '../lib/visual-assets';
@@ -93,10 +99,100 @@ const uid = () => {
 const LAYER_DRAG_TYPE = 'application/x-playable-layer';
 const ASSET_DRAG_TYPE = 'application/x-playable-asset';
 const layerFieldMap: Record<LayerTarget, Array<keyof LayerSettings>> = {
-  hand: ['layerOrder', 'handId', 'handMotion', 'handX', 'handY', 'handSize', 'injectHand'],
-  scan: ['layerOrder', 'scanStyle', 'scanX', 'scanY', 'scanSize', 'scanSpeed', 'injectScan'],
-  asset: ['layerOrder', 'assetId', 'assetX', 'assetY', 'assetSize', 'assetSpeed', 'injectAsset'],
-  cta: ['layerOrder', 'ctaText', 'ctaX', 'ctaY', 'ctaWidth', 'showCta', 'buttonAnimation'],
+  hand: [
+    'layerOrder',
+    'handId',
+    'handMotion',
+    'handX',
+    'handY',
+    'handSize',
+    'handRotation',
+    'handLocked',
+    'injectHand',
+    'ctaScanGrouped',
+    'scanX',
+    'scanY',
+    'injectScan',
+  ],
+  scan: [
+    'layerOrder',
+    'scanStyle',
+    'scanX',
+    'scanY',
+    'scanSize',
+    'scanRotation',
+    'scanLocked',
+    'scanSpeed',
+    'scanDelay',
+    'scanLoop',
+    'scanAutoplay',
+    'scanAnimationName',
+    'scanScaleStart',
+    'scanScaleEnd',
+    'scanOpacityStart',
+    'scanOpacityEnd',
+    'scanOffsetX',
+    'scanOffsetY',
+    'injectScan',
+    'ctaScanGrouped',
+    'ctaX',
+    'ctaY',
+    'showCta',
+    'handX',
+    'handY',
+    'handMotion',
+    'injectHand',
+  ],
+  asset: ['layerOrder', 'assetId', 'assetX', 'assetY', 'assetSize', 'assetRotation', 'assetLocked', 'assetSpeed', 'injectAsset'],
+  cta: [
+    'layerOrder',
+    'ctaText',
+    'ctaX',
+    'ctaY',
+    'ctaWidth',
+    'ctaRotation',
+    'ctaLocked',
+    'showCta',
+    'buttonAnimation',
+    'ctaScanGrouped',
+    'scanX',
+    'scanY',
+    'injectScan',
+    'handX',
+    'handY',
+    'handMotion',
+    'injectHand',
+  ],
+};
+const lockedLayerFieldMap: Record<LayerTarget, Array<keyof LayerSettings>> = {
+  hand: ['handId', 'handMotion', 'handX', 'handY', 'handSize', 'handRotation', 'injectHand'],
+  scan: [
+    'scanStyle',
+    'scanX',
+    'scanY',
+    'scanSize',
+    'scanRotation',
+    'scanSpeed',
+    'scanDelay',
+    'scanLoop',
+    'scanAutoplay',
+    'scanAnimationName',
+    'scanScaleStart',
+    'scanScaleEnd',
+    'scanOpacityStart',
+    'scanOpacityEnd',
+    'scanOffsetX',
+    'scanOffsetY',
+    'injectScan',
+  ],
+  asset: ['assetId', 'assetX', 'assetY', 'assetSize', 'assetRotation', 'assetSpeed', 'injectAsset'],
+  cta: ['ctaText', 'ctaX', 'ctaY', 'ctaWidth', 'ctaRotation', 'showCta', 'buttonAnimation'],
+};
+const layerLockFieldMap: Record<LayerTarget, keyof LayerSettings> = {
+  hand: 'handLocked',
+  scan: 'scanLocked',
+  asset: 'assetLocked',
+  cta: 'ctaLocked',
 };
 const layerMeta: Record<LayerTarget, { label: string; group: string }> = {
   hand: { label: 'Hand', group: 'Interaction' },
@@ -140,6 +236,177 @@ function scopeLayerPatch(partial: Partial<LayerSettings>, layer: LayerTarget) {
   ) as Partial<LayerSettings>;
 }
 
+function mergeLayerSettings(base: Partial<LayerSettings>, partial: Partial<LayerSettings> = {}) {
+  const merged = {
+    ...defaultLayerSettings,
+    ...base,
+    ...partial,
+  } as LayerSettings;
+  return {
+    ...merged,
+    ctaScanGrouped: merged.ctaScanGrouped !== false,
+    layerOrder: getLayerOrder(merged),
+  };
+}
+
+function getCtaHandPatch(layer: Partial<LayerSettings>) {
+  const merged = mergeLayerSettings(layer);
+  return {
+    handX: Math.round(clamp(merged.ctaX + Math.min(14, Math.max(8, merged.ctaWidth * 0.18)), 8, 92)),
+    handY: Math.round(clamp(merged.ctaY - 1, 12, 92)),
+    handMotion: 'tap' as LayerSettings['handMotion'],
+    injectHand: true,
+  } satisfies Partial<LayerSettings>;
+}
+
+function isLayerLocked(layer: Partial<LayerSettings>, target: LayerTarget) {
+  if (target === 'hand') return Boolean(layer.handLocked);
+  if (target === 'scan') return Boolean(layer.scanLocked);
+  if (target === 'asset') return Boolean(layer.assetLocked);
+  return Boolean(layer.ctaLocked);
+}
+
+function getLayerLockPatch(target: LayerTarget, locked: boolean) {
+  if (target === 'hand') return { handLocked: locked } satisfies Partial<LayerSettings>;
+  if (target === 'scan') return { scanLocked: locked } satisfies Partial<LayerSettings>;
+  if (target === 'asset') return { assetLocked: locked } satisfies Partial<LayerSettings>;
+  return { ctaLocked: locked } satisfies Partial<LayerSettings>;
+}
+
+function getLayerRotationPatch(target: LayerTarget, rotation: number) {
+  const next = Math.round(clamp(rotation, -180, 180));
+  if (target === 'hand') return { handRotation: next } satisfies Partial<LayerSettings>;
+  if (target === 'scan') return { scanRotation: next } satisfies Partial<LayerSettings>;
+  if (target === 'asset') return { assetRotation: next } satisfies Partial<LayerSettings>;
+  return { ctaRotation: next } satisfies Partial<LayerSettings>;
+}
+
+function getLayerSizePatch(target: LayerTarget, size: number) {
+  if (target === 'hand') return { handSize: Math.round(clamp(size, 32, 260)) } satisfies Partial<LayerSettings>;
+  if (target === 'scan') return { scanSize: Math.round(clamp(size, 48, 360)) } satisfies Partial<LayerSettings>;
+  if (target === 'asset') return { assetSize: Math.round(clamp(size, 48, 280)) } satisfies Partial<LayerSettings>;
+  return { ctaWidth: Math.round(clamp(size, 44, 92)) } satisfies Partial<LayerSettings>;
+}
+
+function hasLayerLockPatch(partial: Partial<LayerSettings>, target: LayerTarget) {
+  return Object.prototype.hasOwnProperty.call(partial, layerLockFieldMap[target]);
+}
+
+function filterLockedLayerPatch(base: Partial<LayerSettings>, partial: Partial<LayerSettings>, target: LayerTarget) {
+  if (isLayerLocked(base, target) && !hasLayerLockPatch(partial, target)) return {};
+
+  const entries = Object.entries(partial).filter(([key]) => {
+    for (const layerTarget of ['hand', 'scan', 'asset', 'cta'] as LayerTarget[]) {
+      if (key === layerLockFieldMap[layerTarget]) return true;
+      if (isLayerLocked(base, layerTarget) && lockedLayerFieldMap[layerTarget].includes(key as keyof LayerSettings)) return false;
+    }
+    return true;
+  });
+
+  return Object.fromEntries(entries) as Partial<LayerSettings>;
+}
+
+function buildCtaCompanionPatch(base: Partial<LayerSettings>, partial: Partial<LayerSettings>) {
+  const next = mergeLayerSettings(base, partial);
+  const handPatch = getCtaHandPatch(next);
+  return {
+    ...partial,
+    ...(next.ctaScanGrouped
+      ? {
+          scanX: handPatch.handX,
+          scanY: handPatch.handY,
+          injectScan: true,
+        }
+      : {}),
+    ...(next.ctaScanGrouped ? handPatch : {}),
+  } satisfies Partial<LayerSettings>;
+}
+
+function buildHandCompanionPatch(base: Partial<LayerSettings>, partial: Partial<LayerSettings>) {
+  const next = mergeLayerSettings(base, partial);
+  return {
+    ...partial,
+    ...(next.ctaScanGrouped
+      ? {
+          scanX: next.handX,
+          scanY: next.handY,
+          injectScan: true,
+        }
+      : {}),
+  } satisfies Partial<LayerSettings>;
+}
+
+function buildScanCompanionPatch(base: Partial<LayerSettings>, partial: Partial<LayerSettings>) {
+  const next = mergeLayerSettings(base, partial);
+  if (!next.ctaScanGrouped) return partial;
+
+  return buildHandCompanionPatch(next, {
+    ...partial,
+    ...('scanX' in partial || 'scanY' in partial
+      ? {
+          handX: 'handX' in partial ? next.handX : next.scanX,
+          handY: 'handY' in partial ? next.handY : next.scanY,
+          injectHand: true,
+        }
+      : {}),
+  });
+}
+
+function setCtaScanGroupPatch(base: Partial<LayerSettings>, grouped: boolean) {
+  if (!grouped) return { ctaScanGrouped: false } satisfies Partial<LayerSettings>;
+  return buildCtaCompanionPatch(base, {
+    ctaScanGrouped: true,
+    scanStyle: base.scanStyle && base.scanStyle !== 'none' ? base.scanStyle : 'ripple',
+    injectScan: true,
+    showCta: true,
+  });
+}
+
+function pickLayerFields(layer: Partial<LayerSettings>, fields: Array<keyof LayerSettings>) {
+  return Object.fromEntries(Object.entries(layer).filter(([key]) => fields.includes(key as keyof LayerSettings))) as Partial<LayerSettings>;
+}
+
+function getRecipePatchForLayer(layer: Partial<LayerSettings>, target: LayerTarget) {
+  if (target === 'hand') {
+    const patch = pickLayerFields(layer, ['handId', 'handMotion', 'handSize']);
+    return Object.keys(patch).length
+      ? ({
+          ...patch,
+          handMotion: patch.handMotion || 'tap',
+          injectHand: true,
+        } satisfies Partial<LayerSettings>)
+      : {};
+  }
+
+  if (target === 'scan') {
+    const patch = pickLayerFields(layer, ['scanStyle', 'scanX', 'scanY', 'scanSize', 'scanSpeed']);
+    return Object.keys(patch).length
+      ? ({
+          ...patch,
+          injectScan: true,
+        } satisfies Partial<LayerSettings>)
+      : {};
+  }
+
+  if (target === 'cta') {
+    const patch = pickLayerFields(layer, ['buttonAnimation', 'ctaX', 'ctaY', 'ctaWidth', 'ctaText']);
+    return Object.keys(patch).length
+      ? ({
+          ...patch,
+          showCta: true,
+        } satisfies Partial<LayerSettings>)
+      : {};
+  }
+
+  const patch = pickLayerFields(layer, ['assetId', 'assetX', 'assetY', 'assetSize', 'assetSpeed']);
+  return Object.keys(patch).length
+    ? ({
+        ...patch,
+        injectAsset: true,
+      } satisfies Partial<LayerSettings>)
+    : {};
+}
+
 export function PlayableStudio() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const handDataUrlCache = useRef(new Map<string, string>());
@@ -158,6 +425,10 @@ export function PlayableStudio() {
   const [generationHistory, setGenerationHistory] = useState<GenerationHistoryEntry[]>([]);
   const [assetLibraryTab, setAssetLibraryTab] = useState<AssetLibraryTab>('hand');
 
+  useEffect(() => {
+    setSettings((current) => (current.imageFit === 'cover' ? current : { ...current, imageFit: 'cover' }));
+  }, []);
+
   const activeSource = useMemo(
     () => sources.find((source) => source.id === activeSourceId) || sources[0] || null,
     [activeSourceId, sources],
@@ -167,6 +438,7 @@ export function PlayableStudio() {
     [selectedVariantId, variants],
   );
   const activeLayer = selectedVariant?.settings || defaultLayerSettings;
+  const activeImageFit = settings.imageFit || 'cover';
   const activeAiReady =
     settings.aiProvider === 'openai' ? Boolean(health?.openAiConfigured) : Boolean(health?.geminiConfigured);
   const activeAiLabel = settings.aiProvider === 'openai' ? 'GPT' : 'Gemini';
@@ -233,9 +505,15 @@ export function PlayableStudio() {
 
       setVariants((current) =>
         current.map((variant) => {
-          if (variant.id === targetId) return { ...variant, settings: { ...variant.settings, ...partial } };
+          if (variant.id === targetId) {
+            const allowedPartial = filterLockedLayerPatch(variant.settings, partial, layerTarget);
+            if (!Object.keys(allowedPartial).length) return variant;
+            return { ...variant, settings: { ...variant.settings, ...allowedPartial } };
+          }
           if (!settings.syncAllVariants || !hasSharedChanges) return variant;
-          return { ...variant, settings: { ...variant.settings, ...sharedPartial } };
+          const allowedSharedPartial = filterLockedLayerPatch(variant.settings, sharedPartial, layerTarget);
+          if (!Object.keys(allowedSharedPartial).length) return variant;
+          return { ...variant, settings: { ...variant.settings, ...allowedSharedPartial } };
         }),
       );
     },
@@ -291,6 +569,7 @@ export function PlayableStudio() {
       setAiWorkers(['idle', 'idle', 'idle', 'idle']);
       setLastAiDuration(null);
       setProjectSetting('name', safeFileName(imported[0].name));
+      setProjectSetting('imageFit', 'cover');
       const firstImage = imported.find((source) => source.kind === 'image' && source.dataUrl);
       if (firstImage) {
         const drafts = await createDraftVariants(firstImage);
@@ -316,7 +595,7 @@ export function PlayableStudio() {
   ): Promise<PlayableVariant> => {
     const dimensions = await getImageDimensions(image.dataUrl);
     const rawHotspot = await detectImageHotspot(image.dataUrl).catch(() => source.hotspot || defaultHotspot());
-    const hotspot = projectHotspotToFrame(rawHotspot, dimensions, settings.orientation);
+    const hotspot = projectHotspotToFrame(rawHotspot, dimensions, settings.orientation, activeImageFit);
     return {
       id: uid(),
       sourceId: source.id,
@@ -501,7 +780,7 @@ export function PlayableStudio() {
       const next = await Promise.all(
         variants.map(async (variant) => {
           const rawHotspot = await detectImageHotspot(variant.dataUrl);
-          const hotspot = projectHotspotToFrame(rawHotspot, variant, settings.orientation);
+          const hotspot = projectHotspotToFrame(rawHotspot, variant, settings.orientation, activeImageFit);
           const suggestedLayer = layerFromHotspot(hotspot, variant.index);
           return {
             ...variant,
@@ -539,6 +818,7 @@ export function PlayableStudio() {
       useClickTag: settings.useClickTag,
       handDataUrl,
       orientation: settings.orientation,
+      imageFit: activeImageFit,
     });
   };
 
@@ -691,8 +971,50 @@ export function PlayableStudio() {
   const applyRecipe = (recipeId: string) => {
     const recipe = recipePresets.find((item) => item.id === recipeId);
     if (!recipe) return;
-    updateLayer(recipe.layer);
-    setNotice({ tone: 'ok', text: `Preset ${recipe.label}` });
+    const patch = getRecipePatchForLayer(recipe.layer, selectedLayer);
+    if (!Object.keys(patch).length) {
+      setNotice({ tone: 'warn', text: `${recipe.label} does not target ${layerMeta[selectedLayer].label}` });
+      return;
+    }
+
+    if (selectedLayer === 'scan') updateLayer(buildScanCompanionPatch(layerForControls, patch), undefined, 'scan');
+    else if (selectedLayer === 'cta') updateLayer(buildCtaCompanionPatch(layerForControls, patch), undefined, 'cta');
+    else if (selectedLayer === 'hand') updateLayer(buildHandCompanionPatch(layerForControls, patch), undefined, 'hand');
+    else updateLayer(patch, undefined, selectedLayer);
+
+    setNotice({ tone: 'ok', text: `${recipe.label} applied to ${layerMeta[selectedLayer].label}` });
+  };
+
+  const applyScanPreset = (scanStyle: LayerSettings['scanStyle']) => {
+    const preset = scanPresets.find((item) => item.id === scanStyle);
+    if (!preset || scanStyle === 'none') return;
+    const scanSize = scanStyle === 'face' ? 160 : scanStyle === 'ripple' || scanStyle === 'ring' ? 136 : layerForControls.scanSize;
+    const groupedScan = scanStyle === 'ripple' || scanStyle === 'ring' || scanStyle === 'spark';
+    const hotspot = selectedVariant?.hotspot || { x: layerForControls.scanX, y: layerForControls.scanY };
+    setSelectedLayer('scan');
+    const patch = groupedScan
+      ? buildHandCompanionPatch(layerForControls, {
+          ctaScanGrouped: true,
+          scanStyle,
+          scanAnimationName: preset.label,
+          scanSize,
+          scanOffsetX: 0,
+          scanOffsetY: 0,
+          injectScan: true,
+        })
+      : ({
+          ctaScanGrouped: false,
+          scanStyle,
+          scanAnimationName: preset.label,
+          scanSize,
+          scanOffsetX: 0,
+          scanOffsetY: 0,
+          scanX: Math.round(clamp(hotspot.x, 8, 92)),
+          scanY: Math.round(clamp(hotspot.y, 12, 88)),
+          injectScan: true,
+        } satisfies Partial<LayerSettings>);
+    updateLayer(patch, undefined, 'scan');
+    setNotice({ tone: 'ok', text: `${preset.label} applied to Scan` });
   };
 
   const applyVisualAsset = (assetId: string) => {
@@ -752,13 +1074,17 @@ export function PlayableStudio() {
   };
 
   const layerForControls = normalizeLayerSettings(selectedVariant?.settings || defaultLayerSettings);
+  const selectedLayerLocked = isLayerLocked(layerForControls, selectedLayer);
 
   const moveLayer = useCallback(
     (variantId: string, layer: LayerTarget, x: number, y: number, assetId?: string) => {
+      const currentLayer = normalizeLayerSettings(variants.find((variant) => variant.id === variantId)?.settings || defaultLayerSettings);
       setSelectedVariantId(variantId);
       setSelectedLayer(layer);
-      if (layer === 'hand') updateLayer({ handX: x, handY: y, injectHand: true }, variantId, 'hand');
-      if (layer === 'scan') updateLayer({ scanX: x, scanY: y, injectScan: true }, variantId, 'scan');
+      if (layer === 'hand') updateLayer(buildHandCompanionPatch(currentLayer, { handX: x, handY: y, injectHand: true }), variantId, 'hand');
+      if (layer === 'scan') {
+        updateLayer(buildScanCompanionPatch(currentLayer, { scanX: x, scanY: y, injectScan: true }), variantId, 'scan');
+      }
       if (layer === 'asset') {
         updateLayer(
           { assetX: x, assetY: y, injectAsset: true, ...(assetId ? { assetId } : {}) },
@@ -766,9 +1092,31 @@ export function PlayableStudio() {
           'asset',
         );
       }
-      if (layer === 'cta') updateLayer({ ctaX: x, ctaY: y, showCta: true }, variantId, 'cta');
+      if (layer === 'cta') updateLayer(buildCtaCompanionPatch(currentLayer, { ctaX: x, ctaY: y, showCta: true }), variantId, 'cta');
     },
-    [updateLayer],
+    [updateLayer, variants],
+  );
+
+  const patchPreviewLayer = useCallback(
+    (variantId: string, layer: LayerTarget, partial: Partial<LayerSettings>) => {
+      const currentLayer = normalizeLayerSettings(variants.find((variant) => variant.id === variantId)?.settings || defaultLayerSettings);
+      setSelectedVariantId(variantId);
+      setSelectedLayer(layer);
+      if (layer === 'scan') {
+        updateLayer(buildScanCompanionPatch(currentLayer, partial), variantId, 'scan');
+        return;
+      }
+      if (layer === 'cta') {
+        updateLayer(buildCtaCompanionPatch(currentLayer, partial), variantId, 'cta');
+        return;
+      }
+      if (layer === 'hand') {
+        updateLayer(buildHandCompanionPatch(currentLayer, partial), variantId, 'hand');
+        return;
+      }
+      updateLayer(partial, variantId, layer);
+    },
+    [updateLayer, variants],
   );
 
   const setLayerVisibility = (layer: LayerTarget, visible: boolean) => {
@@ -788,6 +1136,27 @@ export function PlayableStudio() {
     [next[index], next[swapIndex]] = [next[swapIndex], next[index]];
     setSelectedLayer(layer);
     updateLayer({ layerOrder: next }, undefined, layer);
+  };
+
+  const setLayerLock = (layer: LayerTarget, locked: boolean) => {
+    setSelectedLayer(layer);
+    updateLayer(getLayerLockPatch(layer, locked), undefined, layer);
+  };
+
+  const updateScanControls = (partial: Partial<LayerSettings>) => {
+    updateLayer(buildScanCompanionPatch(layerForControls, partial), undefined, 'scan');
+  };
+
+  const updateCtaControls = (partial: Partial<LayerSettings>) => {
+    updateLayer(buildCtaCompanionPatch(layerForControls, partial), undefined, 'cta');
+  };
+
+  const updateHandControls = (partial: Partial<LayerSettings>) => {
+    updateLayer(buildHandCompanionPatch(layerForControls, partial), undefined, 'hand');
+  };
+
+  const setCtaScanGrouped = (grouped: boolean) => {
+    updateLayer(setCtaScanGroupPatch(layerForControls, grouped), undefined, selectedLayer === 'scan' ? 'scan' : 'cta');
   };
 
   return (
@@ -899,15 +1268,19 @@ export function PlayableStudio() {
 
         <section className="sidebar-section">
           <div className="section-head">
-            <span>Animation library</span>
-            <b>{recipePresets.length}</b>
+            <span>Scan animation library</span>
+            <b>{scanPresets.filter((preset) => preset.id !== 'none').length}</b>
           </div>
           <div className="recipe-grid">
-            {recipePresets.map((recipe) => (
-              <button key={recipe.id} type="button" className="recipe-card" onClick={() => applyRecipe(recipe.id)}>
-                <Sparkles size={16} />
-                <strong>{recipe.label}</strong>
-                <small>{recipe.note}</small>
+            {scanPresets
+              .filter((preset) => preset.id !== 'none')
+              .map((preset) => (
+              <button key={preset.id} type="button" className="recipe-card" onClick={() => applyScanPreset(preset.id)}>
+                <ScanPresetPreview scanStyle={preset.id} />
+                <span className="recipe-copy">
+                  <strong>{preset.label}</strong>
+                  <small>{preset.note}</small>
+                </span>
               </button>
             ))}
           </div>
@@ -988,6 +1361,26 @@ export function PlayableStudio() {
               <Grid2X2 size={16} />
               Draft x4
             </button>
+            <div className="fit-toggle" role="group" aria-label="Image fit mode">
+              <button
+                className={activeImageFit === 'cover' ? 'active' : ''}
+                type="button"
+                onClick={() => setProjectSetting('imageFit', 'cover')}
+                title="Fill 9:16 without distortion"
+              >
+                <Maximize2 size={14} />
+                Fill
+              </button>
+              <button
+                className={activeImageFit === 'contain' ? 'active' : ''}
+                type="button"
+                onClick={() => setProjectSetting('imageFit', 'contain')}
+                title="Fit full image without cropping"
+              >
+                <Minimize2 size={14} />
+                Fit
+              </button>
+            </div>
             <button className="secondary-button" type="button" onClick={detectAllVariants} disabled={!variants.length || busy}>
               <Crosshair size={16} />
               Detect
@@ -1018,11 +1411,13 @@ export function PlayableStudio() {
                 key={variant.id}
                 variant={variant}
                 orientation={settings.orientation}
+                imageFit={activeImageFit}
                 selected={variant.id === selectedVariant?.id}
                 selectedLayer={selectedLayer}
                 onSelect={() => setSelectedVariantId(variant.id)}
                 onLayerSelect={setSelectedLayer}
                 onLayerDrop={(layer, x, y, assetId) => moveLayer(variant.id, layer, x, y, assetId)}
+                onLayerPatch={(layer, partial) => patchPreviewLayer(variant.id, layer, partial)}
               />
             ))
           ) : (
@@ -1074,6 +1469,15 @@ export function PlayableStudio() {
                 CTA
               </button>
             </div>
+            <button
+              className={`group-toggle ${layerForControls.ctaScanGrouped ? 'active' : ''}`}
+              type="button"
+              onClick={() => setCtaScanGrouped(!layerForControls.ctaScanGrouped)}
+              title={layerForControls.ctaScanGrouped ? 'Ungroup scan from CTA' : 'Group scan with CTA'}
+            >
+              {layerForControls.ctaScanGrouped ? <Link2 size={14} /> : <Unlink2 size={14} />}
+              {layerForControls.ctaScanGrouped ? 'Grouped' : 'Ungrouped'}
+            </button>
             <div className="worker-strip">
               {aiWorkers.map((status, index) => (
                 <span className={`worker-pill ${status}`} key={`${status}-${index}`}>
@@ -1162,6 +1566,7 @@ export function PlayableStudio() {
             onSelect={setSelectedLayer}
             onVisibleChange={setLayerVisibility}
             onMove={moveLayerOrder}
+            onLockChange={setLayerLock}
           />
         </section>
 
@@ -1180,6 +1585,14 @@ export function PlayableStudio() {
               </small>
             </div>
           )}
+          <button
+            className={`layer-lock-toggle ${selectedLayerLocked ? 'active' : ''}`}
+            type="button"
+            onClick={() => setLayerLock(selectedLayer, !selectedLayerLocked)}
+          >
+            {selectedLayerLocked ? <Lock size={15} /> : <Unlock size={15} />}
+            {selectedLayerLocked ? 'Locked' : 'Unlocked'}
+          </button>
           <div className="segmented-row">
             <button
               className={selectedLayer === 'hand' ? 'active' : ''}
@@ -1220,10 +1633,10 @@ export function PlayableStudio() {
           </div>
 
           {selectedLayer === 'hand' && (
-            <div className="control-stack">
+            <fieldset className="control-stack" disabled={selectedLayerLocked}>
               <label className="field">
                 <span>Motion</span>
-                <select value={layerForControls.handMotion} onChange={(event) => updateLayer({ handMotion: event.target.value as LayerSettings['handMotion'] })}>
+                <select value={layerForControls.handMotion} onChange={(event) => updateHandControls({ handMotion: event.target.value as LayerSettings['handMotion'] })}>
                   {handMotionPresets.map((preset) => (
                     <option key={preset.id} value={preset.id}>
                       {preset.label}
@@ -1231,21 +1644,22 @@ export function PlayableStudio() {
                   ))}
                 </select>
               </label>
-              <NumberControl label="X" value={layerForControls.handX} min={0} max={100} onChange={(value) => updateLayer({ handX: value })} />
-              <NumberControl label="Y" value={layerForControls.handY} min={0} max={100} onChange={(value) => updateLayer({ handY: value })} />
-              <NumberControl label="Size" value={layerForControls.handSize} min={32} max={260} onChange={(value) => updateLayer({ handSize: value })} />
+              <NumberControl label="X" value={layerForControls.handX} min={0} max={100} onChange={(value) => updateHandControls({ handX: value })} />
+              <NumberControl label="Y" value={layerForControls.handY} min={0} max={100} onChange={(value) => updateHandControls({ handY: value })} />
+              <NumberControl label="Size" value={layerForControls.handSize} min={32} max={260} onChange={(value) => updateHandControls({ handSize: value })} />
+              <NumberControl label="Rotate" value={layerForControls.handRotation} min={-180} max={180} onChange={(value) => updateHandControls(getLayerRotationPatch('hand', value))} />
               <label className="check-row">
-                <input type="checkbox" checked={layerForControls.injectHand} onChange={(event) => updateLayer({ injectHand: event.target.checked })} />
+                <input type="checkbox" checked={layerForControls.injectHand} onChange={(event) => updateHandControls({ injectHand: event.target.checked })} />
                 <span>Hand visible</span>
               </label>
-            </div>
+            </fieldset>
           )}
 
           {selectedLayer === 'scan' && (
-            <div className="control-stack">
+            <fieldset className="control-stack" disabled={selectedLayerLocked}>
               <label className="field">
                 <span>Scan style</span>
-                <select value={layerForControls.scanStyle} onChange={(event) => updateLayer({ scanStyle: event.target.value as LayerSettings['scanStyle'] })}>
+                <select value={layerForControls.scanStyle} onChange={(event) => updateScanControls({ scanStyle: event.target.value as LayerSettings['scanStyle'] })}>
                   {scanPresets.map((preset) => (
                     <option key={preset.id} value={preset.id}>
                       {preset.label}
@@ -1253,19 +1667,73 @@ export function PlayableStudio() {
                   ))}
                 </select>
               </label>
-              <NumberControl label="X" value={layerForControls.scanX} min={0} max={100} onChange={(value) => updateLayer({ scanX: value })} />
-              <NumberControl label="Y" value={layerForControls.scanY} min={0} max={100} onChange={(value) => updateLayer({ scanY: value })} />
-              <NumberControl label="Size" value={layerForControls.scanSize} min={48} max={360} onChange={(value) => updateLayer({ scanSize: value })} />
-              <NumberControl label="Speed" value={layerForControls.scanSpeed} min={400} max={5000} step={100} onChange={(value) => updateLayer({ scanSpeed: value })} />
+              <div className="animation-parameter-card">
+                <div className="section-title compact">
+                  <h3>Animation Parameters</h3>
+                  <span>{layerForControls.scanAnimationName || 'Tap Ripple'}</span>
+                </div>
+                <label className="field">
+                  <span>Name</span>
+                  <input value={layerForControls.scanAnimationName} onChange={(event) => updateScanControls({ scanAnimationName: event.target.value })} />
+                </label>
+                <div className="field-grid">
+                  <label className="field">
+                    <span>Loop Times</span>
+                    <select value={layerForControls.scanLoop} onChange={(event) => updateScanControls({ scanLoop: event.target.value as LayerSettings['scanLoop'] })}>
+                      <option value="once">Play 1 time</option>
+                      <option value="loop">One-way cycle</option>
+                      <option value="pingpong">Two-way loop</option>
+                    </select>
+                  </label>
+                  <label className="check-row animation-check">
+                    <input type="checkbox" checked={layerForControls.scanAutoplay} onChange={(event) => updateScanControls({ scanAutoplay: event.target.checked })} />
+                    <span>Autoplay</span>
+                  </label>
+                </div>
+                <NumberControl label="Delay" value={layerForControls.scanDelay} min={0} max={3000} step={100} onChange={(value) => updateScanControls({ scanDelay: value })} />
+                <NumberControl label="Duration" value={layerForControls.scanSpeed} min={400} max={5000} step={100} onChange={(value) => updateScanControls({ scanSpeed: value })} />
+                <div className="parameter-subtitle">Scale</div>
+                <NumberControl label="Start" value={layerForControls.scanScaleStart} min={0.2} max={2} step={0.05} onChange={(value) => updateScanControls({ scanScaleStart: value })} />
+                <NumberControl label="End" value={layerForControls.scanScaleEnd} min={0.2} max={3} step={0.05} onChange={(value) => updateScanControls({ scanScaleEnd: value })} />
+                <div className="parameter-subtitle">Opacity</div>
+                <NumberControl label="Start" value={layerForControls.scanOpacityStart} min={0} max={100} onChange={(value) => updateScanControls({ scanOpacityStart: value })} />
+                <NumberControl label="End" value={layerForControls.scanOpacityEnd} min={0} max={100} onChange={(value) => updateScanControls({ scanOpacityEnd: value })} />
+                <div className="parameter-subtitle">Tap Ripple Position</div>
+                {layerForControls.ctaScanGrouped ? (
+                  <>
+                    <NumberControl label="Off X" value={layerForControls.scanOffsetX} min={-220} max={220} onChange={(value) => updateScanControls({ scanOffsetX: value })} />
+                    <NumberControl label="Off Y" value={layerForControls.scanOffsetY} min={-220} max={220} onChange={(value) => updateScanControls({ scanOffsetY: value })} />
+                  </>
+                ) : (
+                  <>
+                    <NumberControl label="X" value={layerForControls.scanX} min={0} max={100} onChange={(value) => updateScanControls({ scanX: value })} />
+                    <NumberControl label="Y" value={layerForControls.scanY} min={0} max={100} onChange={(value) => updateScanControls({ scanY: value })} />
+                  </>
+                )}
+                <NumberControl label="Size" value={layerForControls.scanSize} min={48} max={360} onChange={(value) => updateScanControls({ scanSize: value })} />
+                <NumberControl label="Rotate" value={layerForControls.scanRotation} min={-180} max={180} onChange={(value) => updateScanControls(getLayerRotationPatch('scan', value))} />
+              </div>
               <label className="check-row">
-                <input type="checkbox" checked={layerForControls.injectScan} onChange={(event) => updateLayer({ injectScan: event.target.checked })} />
+                <input type="checkbox" checked={layerForControls.ctaScanGrouped} onChange={(event) => setCtaScanGrouped(event.target.checked)} />
+                <span>Group with CTA</span>
+              </label>
+              <label className="check-row">
+                <input
+                  type="checkbox"
+                  checked={layerForControls.injectScan}
+                  onChange={(event) =>
+                    event.target.checked
+                      ? updateScanControls({ injectScan: true })
+                      : updateLayer({ injectScan: false, ctaScanGrouped: false }, undefined, 'scan')
+                  }
+                />
                 <span>Scan visible</span>
               </label>
-            </div>
+            </fieldset>
           )}
 
           {selectedLayer === 'asset' && (
-            <div className="control-stack">
+            <fieldset className="control-stack" disabled={selectedLayerLocked}>
               <label className="field">
                 <span>Asset type</span>
                 <select value={layerForControls.assetId} onChange={(event) => updateLayer({ assetId: event.target.value, injectAsset: true })}>
@@ -1279,25 +1747,26 @@ export function PlayableStudio() {
               <NumberControl label="X" value={layerForControls.assetX} min={0} max={100} onChange={(value) => updateLayer({ assetX: value })} />
               <NumberControl label="Y" value={layerForControls.assetY} min={0} max={100} onChange={(value) => updateLayer({ assetY: value })} />
               <NumberControl label="Size" value={layerForControls.assetSize} min={48} max={280} onChange={(value) => updateLayer({ assetSize: value })} />
+              <NumberControl label="Rotate" value={layerForControls.assetRotation} min={-180} max={180} onChange={(value) => updateLayer(getLayerRotationPatch('asset', value))} />
               <NumberControl label="Speed" value={layerForControls.assetSpeed} min={500} max={5000} step={100} onChange={(value) => updateLayer({ assetSpeed: value })} />
               <label className="check-row">
                 <input type="checkbox" checked={layerForControls.injectAsset} onChange={(event) => updateLayer({ injectAsset: event.target.checked })} />
                 <span>Asset visible</span>
               </label>
-            </div>
+            </fieldset>
           )}
 
           {selectedLayer === 'cta' && (
-            <div className="control-stack">
+            <fieldset className="control-stack" disabled={selectedLayerLocked}>
               <label className="field">
                 <span>Text</span>
-                <input value={layerForControls.ctaText} onChange={(event) => updateLayer({ ctaText: event.target.value })} />
+                <input value={layerForControls.ctaText} onChange={(event) => updateCtaControls({ ctaText: event.target.value })} />
               </label>
               <label className="field">
                 <span>Button animation</span>
                 <select
                   value={layerForControls.buttonAnimation}
-                  onChange={(event) => updateLayer({ buttonAnimation: event.target.value as LayerSettings['buttonAnimation'] })}
+                  onChange={(event) => updateCtaControls({ buttonAnimation: event.target.value as LayerSettings['buttonAnimation'] })}
                 >
                   {buttonPresets.map((preset) => (
                     <option key={preset.id} value={preset.id}>
@@ -1306,14 +1775,19 @@ export function PlayableStudio() {
                   ))}
                 </select>
               </label>
-              <NumberControl label="X" value={layerForControls.ctaX} min={0} max={100} onChange={(value) => updateLayer({ ctaX: value })} />
-              <NumberControl label="Y" value={layerForControls.ctaY} min={0} max={100} onChange={(value) => updateLayer({ ctaY: value })} />
-              <NumberControl label="Width" value={layerForControls.ctaWidth} min={44} max={92} onChange={(value) => updateLayer({ ctaWidth: value })} />
+              <NumberControl label="X" value={layerForControls.ctaX} min={0} max={100} onChange={(value) => updateCtaControls({ ctaX: value })} />
+              <NumberControl label="Y" value={layerForControls.ctaY} min={0} max={100} onChange={(value) => updateCtaControls({ ctaY: value })} />
+              <NumberControl label="Width" value={layerForControls.ctaWidth} min={44} max={92} onChange={(value) => updateCtaControls({ ctaWidth: value })} />
+              <NumberControl label="Rotate" value={layerForControls.ctaRotation} min={-180} max={180} onChange={(value) => updateCtaControls(getLayerRotationPatch('cta', value))} />
               <label className="check-row">
-                <input type="checkbox" checked={layerForControls.showCta} onChange={(event) => updateLayer({ showCta: event.target.checked })} />
+                <input type="checkbox" checked={layerForControls.ctaScanGrouped} onChange={(event) => setCtaScanGrouped(event.target.checked)} />
+                <span>Group scan with CTA</span>
+              </label>
+              <label className="check-row">
+                <input type="checkbox" checked={layerForControls.showCta} onChange={(event) => updateCtaControls({ showCta: event.target.checked })} />
                 <span>CTA visible</span>
               </label>
-            </div>
+            </fieldset>
           )}
 
           <div className="layer-actions">
@@ -1359,21 +1833,25 @@ function LayerStack({
   onSelect,
   onVisibleChange,
   onMove,
+  onLockChange,
 }: {
   layer: LayerSettings;
   selectedLayer: LayerTarget;
   onSelect: (layer: LayerTarget) => void;
   onVisibleChange: (layer: LayerTarget, visible: boolean) => void;
   onMove: (layer: LayerTarget, direction: 'up' | 'down') => void;
+  onLockChange: (layer: LayerTarget, locked: boolean) => void;
 }) {
   const order = getLayerOrder(layer);
-  const topToBottom = [...order].reverse();
+  const stackOrder = order.filter((target) => target !== 'scan');
+  const topToBottom = [...stackOrder].reverse();
 
   return (
     <div className="layer-stack">
       {topToBottom.map((target, displayIndex) => {
-        const sourceIndex = order.indexOf(target);
+        const sourceIndex = stackOrder.indexOf(target);
         const visible = isLayerVisible(layer, target);
+        const locked = isLayerLocked(layer, target);
         return (
           <div key={target} className={`layer-row ${selectedLayer === target ? 'active' : ''}`}>
             <button className="layer-select" type="button" onClick={() => onSelect(target)}>
@@ -1385,6 +1863,9 @@ function LayerStack({
             </button>
             <button className="layer-mini" type="button" onClick={() => onVisibleChange(target, !visible)} title={visible ? 'Hide' : 'Show'}>
               {visible ? <Eye size={14} /> : <EyeOff size={14} />}
+            </button>
+            <button className={`layer-mini ${locked ? 'locked' : ''}`} type="button" onClick={() => onLockChange(target, !locked)} title={locked ? 'Unlock' : 'Lock'}>
+              {locked ? <Lock size={14} /> : <Unlock size={14} />}
             </button>
             <button className="layer-mini" type="button" onClick={() => onMove(target, 'up')} disabled={displayIndex === 0} title="Move up">
               <ArrowUp size={14} />
@@ -1405,7 +1886,30 @@ function LayerStack({
   );
 }
 
-function getContainedArtboardStyle(width: number | undefined, height: number | undefined, orientation: ProjectSettings['orientation']) {
+function ScanPresetPreview({ scanStyle }: { scanStyle: LayerSettings['scanStyle'] }) {
+  const hand = getHandAsset(defaultLayerSettings.handId);
+  const scanSpeed = scanStyle === 'sweep' ? 1050 : scanStyle === 'spark' ? 820 : 1200;
+
+  return (
+    <span className="recipe-preview" aria-hidden="true">
+      {scanStyle !== 'none' && (
+        <span
+          className={`preview-scan recipe-preview-scan scan-${scanStyle}`}
+          style={{ ['--scan-speed' as string]: `${scanSpeed}ms` }}
+        />
+      )}
+      <img className="recipe-preview-hand motion-tap" src={hand.src} alt="" />
+    </span>
+  );
+}
+
+function getArtboardStyle(
+  width: number | undefined,
+  height: number | undefined,
+  orientation: ProjectSettings['orientation'],
+  imageFit: ProjectSettings['imageFit'],
+) {
+  if (imageFit === 'cover') return { width: '100%', height: '100%' };
   const frameAspect = orientation === 'landscape' ? 16 / 9 : 9 / 16;
   const imageAspect = width && height && width > 0 && height > 0 ? width / height : frameAspect;
   if (imageAspect > frameAspect) {
@@ -1421,25 +1925,31 @@ function roundCssNumber(value: number) {
 function PreviewCard({
   variant,
   orientation,
+  imageFit,
   selected,
   selectedLayer,
   onSelect,
   onLayerSelect,
   onLayerDrop,
+  onLayerPatch,
 }: {
   variant: PlayableVariant;
   orientation: ProjectSettings['orientation'];
+  imageFit: ProjectSettings['imageFit'];
   selected: boolean;
   selectedLayer: LayerTarget;
   onSelect: () => void;
   onLayerSelect: (layer: LayerTarget) => void;
   onLayerDrop: (layer: LayerTarget, x: number, y: number, assetId?: string) => void;
+  onLayerPatch: (layer: LayerTarget, partial: Partial<LayerSettings>) => void;
 }) {
   const artboardRef = useRef<HTMLDivElement>(null);
   const layer = normalizeLayerSettings(variant.settings);
   const hand = getHandAsset(layer.handId);
   const ratio = orientation === 'landscape' ? '16 / 9' : '9 / 16';
-  const artboardStyle = getContainedArtboardStyle(variant.width, variant.height, orientation);
+  const artboardStyle = getArtboardStyle(variant.width, variant.height, orientation, imageFit);
+  const anchoredScanCss = shouldAnchorScanToFinger(layer) ? getFingerAnchorCss(layer) : null;
+  const scanAnimationVars = getScanAnimationVars(layer);
   const orderedLayerMarkup = getLayerOrder(layer).map((target, index) => {
     const zIndex = 5 + index;
     if (target === 'scan' && layer.injectScan && layer.scanStyle !== 'none') {
@@ -1448,12 +1958,15 @@ function PreviewCard({
           key="scan"
           className={`preview-scan scan-${layer.scanStyle} ${selectedLayer === 'scan' && selected ? 'active' : ''}`}
           style={{
-            left: `${layer.scanX}%`,
-            top: `${layer.scanY}%`,
+            left: anchoredScanCss?.left || `${layer.scanX}%`,
+            top: anchoredScanCss?.top || `${layer.scanY}%`,
             width: `${layer.scanSize}px`,
             height: `${layer.scanSize}px`,
             zIndex,
+            rotate: `${layer.scanRotation}deg`,
             ['--scan-speed' as string]: `${layer.scanSpeed}ms`,
+            ...scanAnimationVars,
+            animationPlayState: layer.scanAutoplay ? undefined : 'paused',
           }}
           onPointerDown={(event) => startDrag('scan', event)}
         />
@@ -1471,6 +1984,7 @@ function PreviewCard({
             width: `${layer.assetSize}px`,
             height: `${layer.assetSize}px`,
             zIndex,
+            rotate: `${layer.assetRotation}deg`,
             ['--asset-speed' as string]: `${layer.assetSpeed}ms`,
           }}
           onPointerDown={(event) => startDrag('asset', event)}
@@ -1492,6 +2006,7 @@ function PreviewCard({
             top: `${layer.handY}%`,
             width: `${layer.handSize}px`,
             zIndex,
+            rotate: `${layer.handRotation}deg`,
           }}
           onPointerDown={(event) => startDrag('hand', event)}
         />
@@ -1509,6 +2024,7 @@ function PreviewCard({
             top: `${layer.ctaY}%`,
             width: `${layer.ctaWidth}%`,
             zIndex,
+            rotate: `${layer.ctaRotation}deg`,
           }}
           onPointerDown={(event) => startDrag('cta', event)}
         >
@@ -1519,21 +2035,95 @@ function PreviewCard({
 
     return null;
   });
+  const selectionBox = selected ? getLayerSelectionBox(layer, selectedLayer) : null;
+  const selectedLayerIsLocked = isLayerLocked(layer, selectedLayer);
+
+  const startResize = (target: LayerTarget, event: ReactPointerEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onSelect();
+    onLayerSelect(target);
+    if (!artboardRef.current || isLayerLocked(layer, target)) return;
+
+    const rect = artboardRef.current.getBoundingClientRect();
+    const position = target === 'scan' && shouldAnchorScanToFinger(layer) ? getFingerAnchorPercent(layer, rect) : getLayerPosition(layer, target);
+    const centerX = rect.left + (position.x / 100) * rect.width;
+    const centerY = rect.top + (position.y / 100) * rect.height;
+    const startDistance = Math.max(1, Math.hypot(event.clientX - centerX, event.clientY - centerY));
+    const startSize = getLayerSizeValue(layer, target);
+
+    const move = (moveEvent: PointerEvent) => {
+      const nextDistance = Math.max(1, Math.hypot(moveEvent.clientX - centerX, moveEvent.clientY - centerY));
+      onLayerPatch(target, getLayerSizePatch(target, startSize * (nextDistance / startDistance)));
+    };
+    const end = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', end);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', end, { once: true });
+  };
+
+  const startRotate = (target: LayerTarget, event: ReactPointerEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onSelect();
+    onLayerSelect(target);
+    if (!artboardRef.current || isLayerLocked(layer, target)) return;
+
+    const rect = artboardRef.current.getBoundingClientRect();
+    const position = target === 'scan' && shouldAnchorScanToFinger(layer) ? getFingerAnchorPercent(layer, rect) : getLayerPosition(layer, target);
+    const centerX = rect.left + (position.x / 100) * rect.width;
+    const centerY = rect.top + (position.y / 100) * rect.height;
+    const startAngle = (Math.atan2(event.clientY - centerY, event.clientX - centerX) * 180) / Math.PI;
+    const startRotation = getLayerRotation(layer, target);
+
+    const move = (moveEvent: PointerEvent) => {
+      const nextAngle = (Math.atan2(moveEvent.clientY - centerY, moveEvent.clientX - centerX) * 180) / Math.PI;
+      onLayerPatch(target, getLayerRotationPatch(target, startRotation + nextAngle - startAngle));
+    };
+    const end = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', end);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', end, { once: true });
+  };
 
   const startDrag = (target: LayerTarget, event: ReactPointerEvent<HTMLElement>) => {
     event.preventDefault();
     event.stopPropagation();
     onSelect();
     onLayerSelect(target);
+    if (isLayerLocked(layer, target)) return;
+    if (!artboardRef.current) return;
+    const rect = artboardRef.current.getBoundingClientRect();
 
-    const update = (clientX: number, clientY: number) => {
+    const startPoint = getPointInElement(artboardRef.current, event.clientX, event.clientY);
+    const startPosition =
+      target === 'scan' && shouldAnchorScanToFinger(layer)
+        ? getFingerAnchorPercent(layer, rect)
+        : target === 'hand'
+        ? { x: layer.handX, y: layer.handY }
+        : target === 'scan'
+          ? { x: layer.scanX, y: layer.scanY }
+          : target === 'asset'
+            ? { x: layer.assetX, y: layer.assetY }
+            : { x: layer.ctaX, y: layer.ctaY };
+
+    const move = (moveEvent: PointerEvent) => {
       if (!artboardRef.current) return;
-      const point = getPointInElement(artboardRef.current, clientX, clientY);
-      onLayerDrop(target, point.x, point.y);
+      const point = getPointInElement(artboardRef.current, moveEvent.clientX, moveEvent.clientY);
+      const x = clamp(startPosition.x + point.x - startPoint.x, 0, 100);
+      const y = clamp(startPosition.y + point.y - startPoint.y, 0, 100);
+      if (target === 'scan' && shouldAnchorScanToFinger(layer)) {
+        const nextRect = artboardRef.current.getBoundingClientRect();
+        const offset = getScanOffsetFromFingerPoint(layer, nextRect, x, y);
+        onLayerPatch('scan', { scanOffsetX: offset.x, scanOffsetY: offset.y, injectScan: true });
+        return;
+      }
+      onLayerDrop(target, x, y);
     };
-
-    update(event.clientX, event.clientY);
-    const move = (moveEvent: PointerEvent) => update(moveEvent.clientX, moveEvent.clientY);
     const end = () => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', end);
@@ -1547,45 +2137,64 @@ function PreviewCard({
     const point = getPointInElement(artboardRef.current, clientX, clientY);
     onSelect();
     onLayerSelect(target);
+    if (target === 'scan' && shouldAnchorScanToFinger(layer)) {
+      const rect = artboardRef.current.getBoundingClientRect();
+      const offset = getScanOffsetFromFingerPoint(layer, rect, point.x, point.y);
+      onLayerPatch('scan', { scanOffsetX: offset.x, scanOffsetY: offset.y, injectScan: true });
+      return;
+    }
     onLayerDrop(target, point.x, point.y, assetId);
   };
 
   return (
-    <motion.article layout className={`preview-card ${selected ? 'selected' : ''}`} onClick={onSelect}>
+    <motion.article layout className={`preview-card ${selected ? 'selected' : ''}`} style={{ aspectRatio: ratio }} onClick={onSelect}>
       <div className="preview-card-head">
         <span>Variant {variant.index}</span>
         <b>{Math.round(variant.hotspot.confidence * 100)}%</b>
       </div>
-      <div
-        className="creative-frame"
-        style={{ aspectRatio: ratio }}
-        onDragOver={(event) => {
-          event.preventDefault();
-          event.dataTransfer.dropEffect = 'move';
-        }}
-        onDrop={(event) => {
-          event.preventDefault();
-          const assetId = getAssetDragData(event);
-          const layerTarget = assetId ? 'asset' : getLayerDragData(event) || selectedLayer;
-          placeLayer(layerTarget, event.clientX, event.clientY, assetId);
-        }}
-        onPointerDown={(event) => {
-          const target = event.target as HTMLElement;
-          if (
-            target !== event.currentTarget &&
-            !target.classList.contains('creative-image') &&
-            !target.classList.contains('creative-artboard') &&
-            !target.classList.contains('creative-backdrop')
-          ) {
-            return;
-          }
-          placeLayer(selectedLayer, event.clientX, event.clientY);
-        }}
-      >
-        <img className="creative-backdrop" src={variant.dataUrl} alt="" />
-        <div ref={artboardRef} className="creative-artboard" style={artboardStyle}>
-          <img className="creative-image" src={variant.dataUrl} alt="" />
-          {orderedLayerMarkup}
+      <div className="preview-stage">
+        <div
+          className="creative-frame"
+          onDragOver={(event) => {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = 'move';
+          }}
+          onDrop={(event) => {
+            event.preventDefault();
+            const assetId = getAssetDragData(event);
+            const layerTarget = assetId ? 'asset' : getLayerDragData(event) || selectedLayer;
+            placeLayer(layerTarget, event.clientX, event.clientY, assetId);
+          }}
+        >
+          <img className="creative-backdrop" src={variant.dataUrl} alt="" />
+          <div ref={artboardRef} className="creative-artboard" style={artboardStyle}>
+            <img className="creative-image" src={variant.dataUrl} alt="" style={{ objectFit: imageFit }} />
+            {orderedLayerMarkup}
+            {selectionBox && (
+              <span
+                className={`selection-box ${selectedLayerIsLocked ? 'locked' : ''}`}
+                style={{
+                  left: selectionBox.left,
+                  top: selectionBox.top,
+                  width: selectionBox.width,
+                  height: selectionBox.height,
+                  rotate: `${selectionBox.rotation}deg`,
+                }}
+                onPointerDown={(event) => startDrag(selectedLayer, event)}
+              >
+                <span className="selection-handle nw" onPointerDown={(event) => startResize(selectedLayer, event)} />
+                <span className="selection-handle ne" onPointerDown={(event) => startResize(selectedLayer, event)} />
+                <span className="selection-handle sw" onPointerDown={(event) => startResize(selectedLayer, event)} />
+                <span className="selection-handle se" onPointerDown={(event) => startResize(selectedLayer, event)} />
+                <span className="selection-rotate-handle" onPointerDown={(event) => startRotate(selectedLayer, event)} />
+                {selectedLayerIsLocked && (
+                  <span className="selection-lock-badge">
+                    <Lock size={11} />
+                  </span>
+                )}
+              </span>
+            )}
+          </div>
         </div>
       </div>
     </motion.article>
@@ -1671,7 +2280,7 @@ function normalizeLayerSettings(settings: Partial<LayerSettings>): LayerSettings
 function getLayerOrder(settings: Partial<LayerSettings>): LayerTarget[] {
   const raw = Array.isArray(settings.layerOrder) ? settings.layerOrder : defaultLayerSettings.layerOrder;
   const valid = raw.filter((layer): layer is LayerTarget => layer === 'hand' || layer === 'scan' || layer === 'asset' || layer === 'cta');
-  return ensureLayerInOrder(valid, 'scan', 'asset', 'hand', 'cta');
+  return keepHandAboveCta(ensureLayerInOrder(valid, 'scan', 'asset', 'cta', 'hand'));
 }
 
 function ensureLayerInOrder(order: LayerTarget[], ...layers: LayerTarget[]) {
@@ -1682,11 +2291,108 @@ function ensureLayerInOrder(order: LayerTarget[], ...layers: LayerTarget[]) {
   return next;
 }
 
+function keepHandAboveCta(order: LayerTarget[]) {
+  const handIndex = order.indexOf('hand');
+  const ctaIndex = order.indexOf('cta');
+  if (handIndex < 0 || ctaIndex < 0 || handIndex > ctaIndex) return order;
+  const next: LayerTarget[] = order.filter((layer) => layer !== 'hand');
+  const nextCtaIndex = next.indexOf('cta');
+  next.splice(nextCtaIndex + 1, 0, 'hand');
+  return next;
+}
+
 function isLayerVisible(layer: LayerSettings, target: LayerTarget) {
   if (target === 'hand') return layer.injectHand;
   if (target === 'scan') return layer.injectScan && layer.scanStyle !== 'none';
   if (target === 'asset') return layer.injectAsset;
   return layer.showCta;
+}
+
+function getLayerPosition(layer: LayerSettings, target: LayerTarget) {
+  if (target === 'hand') return { x: layer.handX, y: layer.handY };
+  if (target === 'scan') return { x: layer.scanX, y: layer.scanY };
+  if (target === 'asset') return { x: layer.assetX, y: layer.assetY };
+  return { x: layer.ctaX, y: layer.ctaY };
+}
+
+function shouldAnchorScanToFinger(layer: LayerSettings) {
+  return layer.ctaScanGrouped && layer.injectHand && layer.injectScan;
+}
+
+function getFingerAnchorCss(layer: LayerSettings) {
+  const offset = getHandAnchorOffset(layer.handId, layer.handSize);
+  return {
+    left: `calc(${layer.handX}% + ${offset.x + layer.scanOffsetX}px)`,
+    top: `calc(${layer.handY}% + ${offset.y + layer.scanOffsetY}px)`,
+  };
+}
+
+function getFingerAnchorPercent(layer: LayerSettings, rect: DOMRect) {
+  const offset = getHandAnchorOffset(layer.handId, layer.handSize);
+  return {
+    x: clamp(layer.handX + ((offset.x + layer.scanOffsetX) / rect.width) * 100, 0, 100),
+    y: clamp(layer.handY + ((offset.y + layer.scanOffsetY) / rect.height) * 100, 0, 100),
+  };
+}
+
+function getScanOffsetFromFingerPoint(layer: LayerSettings, rect: DOMRect, x: number, y: number) {
+  const offset = getHandAnchorOffset(layer.handId, layer.handSize);
+  return {
+    x: Math.round(clamp(((x - layer.handX) / 100) * rect.width - offset.x, -220, 220)),
+    y: Math.round(clamp(((y - layer.handY) / 100) * rect.height - offset.y, -220, 220)),
+  };
+}
+
+function getLayerRotation(layer: LayerSettings, target: LayerTarget) {
+  if (target === 'hand') return layer.handRotation;
+  if (target === 'scan') return layer.scanRotation;
+  if (target === 'asset') return layer.assetRotation;
+  return layer.ctaRotation;
+}
+
+function getLayerSizeValue(layer: LayerSettings, target: LayerTarget) {
+  if (target === 'hand') return layer.handSize;
+  if (target === 'scan') return layer.scanSize;
+  if (target === 'asset') return layer.assetSize;
+  return layer.ctaWidth;
+}
+
+function getLayerSelectionBox(layer: LayerSettings, target: LayerTarget) {
+  if (!isLayerVisible(layer, target)) return null;
+  const position = getLayerPosition(layer, target);
+  const rotation = getLayerRotation(layer, target);
+  const anchoredScan = target === 'scan' && shouldAnchorScanToFinger(layer) ? getFingerAnchorCss(layer) : null;
+
+  if (target === 'cta') {
+    return {
+      left: `${position.x}%`,
+      top: `${position.y}%`,
+      rotation,
+      width: `${layer.ctaWidth}%`,
+      height: '42px',
+    };
+  }
+
+  const size = getLayerSizeValue(layer, target);
+  return {
+    left: anchoredScan?.left || `${position.x}%`,
+    top: anchoredScan?.top || `${position.y}%`,
+    rotation,
+    width: `${size}px`,
+    height: `${size}px`,
+  };
+}
+
+function getScanAnimationVars(layer: LayerSettings) {
+  return {
+    ['--scan-delay' as string]: `${layer.scanDelay}ms`,
+    ['--scan-iterations' as string]: layer.scanLoop === 'once' ? '1' : 'infinite',
+    ['--scan-direction' as string]: layer.scanLoop === 'pingpong' ? 'alternate' : 'normal',
+    ['--scan-scale-start' as string]: String(layer.scanScaleStart),
+    ['--scan-scale-end' as string]: String(layer.scanScaleEnd),
+    ['--scan-opacity-start' as string]: String(clamp(layer.scanOpacityStart / 100, 0, 1)),
+    ['--scan-opacity-end' as string]: String(clamp(layer.scanOpacityEnd / 100, 0, 1)),
+  };
 }
 
 function layerIcon(target: LayerTarget) {
@@ -1753,18 +2459,18 @@ function layerFromHotspot(hotspot: Hotspot, index: number): LayerSettings {
   const targetY = Math.round(clamp(hotspot.y, 18, 84));
   const scanSize = targetY < 44 ? 164 : targetY > 74 ? 132 : 148;
   const handSize = targetY > 76 ? 116 : 112;
-  return {
+  const baseLayer: LayerSettings = {
     ...defaultLayerSettings,
     ...recipe.layer,
-    handX: targetX,
-    handY: targetY,
+    handMotion: 'tap',
     handSize: recipe.layer.handSize || handSize,
-    scanX: targetX,
-    scanY: targetY,
+    scanStyle: 'ripple',
     scanSize: recipe.layer.scanSize || scanSize,
     ctaX: 50,
     ctaY: targetY > 78 ? 90 : 88,
+    ctaScanGrouped: true,
   };
+  return mergeLayerSettings(baseLayer, buildCtaCompanionPatch(baseLayer, {}));
 }
 
 function selectRecipeForHotspot(hotspot: Hotspot, index: number) {
@@ -1784,14 +2490,30 @@ function selectRecipeForHotspot(hotspot: Hotspot, index: number) {
 
 function projectHotspotToFrame(
   hotspot: Hotspot,
-  _dimensions: { width?: number; height?: number },
-  _orientation: ProjectSettings['orientation'],
+  dimensions: { width?: number; height?: number },
+  orientation: ProjectSettings['orientation'],
+  imageFit: ProjectSettings['imageFit'] = 'cover',
 ): Hotspot {
+  const frameAspect = orientation === 'landscape' ? 16 / 9 : 9 / 16;
+  const imageAspect = dimensions.width && dimensions.height && dimensions.width > 0 && dimensions.height > 0 ? dimensions.width / dimensions.height : frameAspect;
+  let x = hotspot.x;
+  let y = hotspot.y;
+
+  if (imageFit === 'cover' && imageAspect > 0 && Math.abs(imageAspect - frameAspect) > 0.001) {
+    if (imageAspect > frameAspect) {
+      const displayedWidth = (imageAspect / frameAspect) * 100;
+      x = (hotspot.x / 100) * displayedWidth - (displayedWidth - 100) / 2;
+    } else {
+      const displayedHeight = (frameAspect / imageAspect) * 100;
+      y = (hotspot.y / 100) * displayedHeight - (displayedHeight - 100) / 2;
+    }
+  }
+
   return {
     ...hotspot,
-    x: clamp(hotspot.x, 8, 92),
-    y: clamp(hotspot.y, 12, 88),
-    reason: `${hotspot.reason || 'detected'}; contained artboard`,
+    x: clamp(x, 8, 92),
+    y: clamp(y, 12, 88),
+    reason: `${hotspot.reason || 'detected'}; ${imageFit} artboard`,
   };
 }
 
