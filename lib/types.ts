@@ -21,7 +21,7 @@ export type HandMotion =
   | 'shake'
   | 'wave';
 
-export type ScanStyle = 'ripple' | 'face' | 'sweep' | 'ring' | 'spotlight' | 'border' | 'spark' | 'none';
+export type ScanStyle = 'ripple' | 'face' | 'sweep' | 'ring' | 'spotlight' | 'border' | 'frame' | 'spark' | 'none';
 
 export type ButtonAnimation = 'pulse' | 'bounce' | 'shine' | 'shake' | 'breath' | 'none';
 
@@ -81,6 +81,7 @@ export interface LayerSettings {
   scanLoop: AnimationLoopMode;
   scanAutoplay: boolean;
   scanAnimationName: string;
+  scanColor: string;
   scanScaleStart: number;
   scanScaleEnd: number;
   scanOpacityStart: number;

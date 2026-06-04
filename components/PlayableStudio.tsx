@@ -127,6 +127,7 @@ const layerFieldMap: Record<LayerTarget, Array<keyof LayerSettings>> = {
     'scanLoop',
     'scanAutoplay',
     'scanAnimationName',
+    'scanColor',
     'scanScaleStart',
     'scanScaleEnd',
     'scanOpacityStart',
@@ -177,6 +178,7 @@ const lockedLayerFieldMap: Record<LayerTarget, Array<keyof LayerSettings>> = {
     'scanLoop',
     'scanAutoplay',
     'scanAnimationName',
+    'scanColor',
     'scanScaleStart',
     'scanScaleEnd',
     'scanOpacityStart',
@@ -205,6 +207,7 @@ const aiProviderModelMap: Record<ProjectSettings['aiProvider'], string> = {
   'gemini-flash': 'gemini/gemini-3.1-flash-image-preview',
   'gemini-pro': 'gemini/gemini-3-pro-image-preview',
 };
+const scanColorSwatches = ['#7c3cff', '#2563eb', '#22d3ee', '#10b981', '#f59e0b', '#ef4444', '#ffffff'];
 
 function setLayerDragData(event: DragEvent<HTMLElement>, layer: LayerTarget, assetId?: string) {
   event.dataTransfer.setData(LAYER_DRAG_TYPE, layer);
@@ -311,14 +314,7 @@ function buildCtaCompanionPatch(base: Partial<LayerSettings>, partial: Partial<L
   const handPatch = getCtaHandPatch(next);
   return {
     ...partial,
-    ...(next.ctaScanGrouped
-      ? {
-          scanX: handPatch.handX,
-          scanY: handPatch.handY,
-          injectScan: true,
-        }
-      : {}),
-    ...(next.ctaScanGrouped ? handPatch : {}),
+    ...(next.injectHand ? handPatch : {}),
   } satisfies Partial<LayerSettings>;
 }
 
@@ -326,11 +322,10 @@ function buildHandCompanionPatch(base: Partial<LayerSettings>, partial: Partial<
   const next = mergeLayerSettings(base, partial);
   return {
     ...partial,
-    ...(next.ctaScanGrouped
+    ...(next.ctaScanGrouped && next.injectScan
       ? {
           scanX: next.handX,
           scanY: next.handY,
-          injectScan: true,
         }
       : {}),
   } satisfies Partial<LayerSettings>;
@@ -356,10 +351,18 @@ function setCtaScanGroupPatch(base: Partial<LayerSettings>, grouped: boolean) {
   if (!grouped) return { ctaScanGrouped: false } satisfies Partial<LayerSettings>;
   return buildCtaCompanionPatch(base, {
     ctaScanGrouped: true,
-    scanStyle: base.scanStyle && base.scanStyle !== 'none' ? base.scanStyle : 'ripple',
+    scanStyle: 'frame',
     injectScan: true,
     showCta: true,
   });
+}
+
+function getRemoveLayerPatch(target: LayerTarget, layerOrder: LayerTarget[]) {
+  const base = { layerOrder } satisfies Partial<LayerSettings>;
+  if (target === 'hand') return { ...base, injectHand: false } satisfies Partial<LayerSettings>;
+  if (target === 'scan') return { ...base, injectScan: false, ctaScanGrouped: false } satisfies Partial<LayerSettings>;
+  if (target === 'asset') return { ...base, injectAsset: false } satisfies Partial<LayerSettings>;
+  return { ...base, showCta: false, ctaScanGrouped: false } satisfies Partial<LayerSettings>;
 }
 
 function pickLayerFields(layer: Partial<LayerSettings>, fields: Array<keyof LayerSettings>) {
@@ -416,6 +419,8 @@ export function PlayableStudio() {
   const [activeSourceId, setActiveSourceId] = useState('');
   const [variants, setVariants] = useState<PlayableVariant[]>([]);
   const [selectedVariantId, setSelectedVariantId] = useState('');
+  const [htmlLayerSettings, setHtmlLayerSettings] = useState<LayerSettings>(() => normalizeLayerSettings(defaultLayerSettings));
+  const [htmlPreviewHandDataUrl, setHtmlPreviewHandDataUrl] = useState<string | undefined>();
   const [selectedLayer, setSelectedLayer] = useState<LayerTarget>('hand');
   const [notice, setNotice] = useState<Notice>({ tone: 'warn', text: 'Chưa có ảnh nguồn' });
   const [busy, setBusy] = useState(false);
@@ -437,7 +442,7 @@ export function PlayableStudio() {
     () => variants.find((variant) => variant.id === selectedVariantId) || variants[0] || null,
     [selectedVariantId, variants],
   );
-  const activeLayer = selectedVariant?.settings || defaultLayerSettings;
+  const activeLayer = selectedVariant?.settings || (activeSource?.kind === 'html' ? htmlLayerSettings : defaultLayerSettings);
   const activeImageFit = settings.imageFit || 'cover';
   const activeAiReady =
     settings.aiProvider === 'openai' ? Boolean(health?.openAiConfigured) : Boolean(health?.geminiConfigured);
@@ -503,6 +508,15 @@ export function PlayableStudio() {
       const sharedPartial = scopeLayerPatch(partial, layerTarget);
       const hasSharedChanges = Object.keys(sharedPartial).length > 0;
 
+      if (!targetId && activeSource?.kind === 'html') {
+        setHtmlLayerSettings((current) => {
+          const allowedPartial = filterLockedLayerPatch(current, partial, layerTarget);
+          if (!Object.keys(allowedPartial).length) return current;
+          return normalizeLayerSettings({ ...current, ...allowedPartial });
+        });
+        return;
+      }
+
       setVariants((current) =>
         current.map((variant) => {
           if (variant.id === targetId) {
@@ -517,7 +531,7 @@ export function PlayableStudio() {
         }),
       );
     },
-    [selectedLayer, selectedVariant?.id, settings.syncAllVariants],
+    [activeSource?.kind, selectedLayer, selectedVariant?.id, settings.syncAllVariants],
   );
 
   const importFiles = async (files: FileList | File[]) => {
@@ -566,6 +580,7 @@ export function PlayableStudio() {
       setActiveSourceId(imported[0].id);
       setVariants([]);
       setSelectedVariantId('');
+      setHtmlLayerSettings(normalizeLayerSettings(defaultLayerSettings));
       setAiWorkers(['idle', 'idle', 'idle', 'idle']);
       setLastAiDuration(null);
       setProjectSetting('name', safeFileName(imported[0].name));
@@ -579,7 +594,6 @@ export function PlayableStudio() {
         return;
       }
       setNotice({ tone: 'ok', text: `${imported.length} file sẵn sàng` });
-      setNotice({ tone: 'ok', text: `Da export ${variants.length * networkExportTargets.length} HTML (${variants.length} variant x 5 nen tang)` });
     } catch (error) {
       setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Import thất bại' });
     } finally {
@@ -803,7 +817,8 @@ export function PlayableStudio() {
   };
 
   const exportVariantHtml = async (variant: PlayableVariant, network: NetworkTarget = settings.network) => {
-    const handDataUrl = variant.settings.injectHand ? await getHandDataUrl(variant.settings.handId) : undefined;
+    const layer = normalizeLayerSettings(variant.settings);
+    const handDataUrl = layer.injectHand ? await getHandDataUrl(layer.handId) : undefined;
     const image: ExportImageInput = {
       name: variant.name,
       dataUrl: variant.dataUrl,
@@ -812,7 +827,7 @@ export function PlayableStudio() {
     };
     return generateImagePlayableHtml({
       image,
-      layer: variant.settings,
+      layer,
       storeUrl: settings.storeUrl,
       network,
       useClickTag: settings.useClickTag,
@@ -852,10 +867,11 @@ export function PlayableStudio() {
     if (activeSource?.kind === 'html' && activeSource.html) {
       setBusy(true);
       try {
-        const handDataUrl = activeLayer.injectHand ? await getHandDataUrl(activeLayer.handId) : undefined;
+        const layer = normalizeLayerSettings(activeLayer);
+        const handDataUrl = layer.injectHand ? await getHandDataUrl(layer.handId) : undefined;
         const html = patchPlayableHtml({
           html: activeSource.html,
-          layer: activeLayer,
+          layer,
           storeUrl: settings.storeUrl,
           network: settings.network,
           useClickTag: settings.useClickTag,
@@ -927,14 +943,62 @@ export function PlayableStudio() {
     }
   };
 
-  const getHandDataUrl = async (handId: string) => {
+  const getHandDataUrl = useCallback(async (handId: string) => {
     const cached = handDataUrlCache.current.get(handId);
     if (cached) return cached;
     const asset = getHandAsset(handId);
     const dataUrl = await loadAssetAsDataUrl(asset.src);
     handDataUrlCache.current.set(handId, dataUrl);
     return dataUrl;
-  };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (activeSource?.kind !== 'html' || !activeLayer.injectHand) {
+      setHtmlPreviewHandDataUrl(undefined);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    getHandDataUrl(activeLayer.handId)
+      .then((dataUrl) => {
+        if (!cancelled) setHtmlPreviewHandDataUrl(dataUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setHtmlPreviewHandDataUrl(undefined);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeLayer.handId, activeLayer.injectHand, activeSource?.kind, getHandDataUrl]);
+
+  const htmlPreviewMarkup = useMemo(() => {
+    if (activeSource?.kind !== 'html' || !activeSource.html) return '';
+    const layer = normalizeLayerSettings(activeLayer);
+    return patchPlayableHtml({
+      html: activeSource.html,
+      layer,
+      storeUrl: settings.storeUrl,
+      network: settings.network,
+      useClickTag: settings.useClickTag,
+      replaceLinks: settings.replaceLinks,
+      ctaSelector: settings.ctaSelector,
+      handDataUrl: htmlPreviewHandDataUrl,
+      previewMode: true,
+    });
+  }, [
+    activeLayer,
+    activeSource?.html,
+    activeSource?.kind,
+    htmlPreviewHandDataUrl,
+    settings.ctaSelector,
+    settings.network,
+    settings.replaceLinks,
+    settings.storeUrl,
+    settings.useClickTag,
+  ]);
 
   const rememberGeneration = (nextVariants: PlayableVariant[], durationSeconds: number | null) => {
     if (!nextVariants.length) return;
@@ -985,40 +1049,25 @@ export function PlayableStudio() {
     setNotice({ tone: 'ok', text: `${recipe.label} applied to ${layerMeta[selectedLayer].label}` });
   };
 
-  const applyScanPreset = (scanStyle: LayerSettings['scanStyle']) => {
-    const preset = scanPresets.find((item) => item.id === scanStyle);
-    if (!preset || scanStyle === 'none') return;
-    const scanSize = scanStyle === 'face' ? 160 : scanStyle === 'ripple' || scanStyle === 'ring' ? 136 : layerForControls.scanSize;
-    const groupedScan = scanStyle === 'ripple' || scanStyle === 'ring' || scanStyle === 'spark';
-    const hotspot = selectedVariant?.hotspot || { x: layerForControls.scanX, y: layerForControls.scanY };
-    setSelectedLayer('scan');
-    const patch = groupedScan
-      ? buildHandCompanionPatch(layerForControls, {
-          ctaScanGrouped: true,
-          scanStyle,
-          scanAnimationName: preset.label,
-          scanSize,
-          scanOffsetX: 0,
-          scanOffsetY: 0,
-          injectScan: true,
-        })
-      : ({
-          ctaScanGrouped: false,
-          scanStyle,
-          scanAnimationName: preset.label,
-          scanSize,
-          scanOffsetX: 0,
-          scanOffsetY: 0,
-          scanX: Math.round(clamp(hotspot.x, 8, 92)),
-          scanY: Math.round(clamp(hotspot.y, 12, 88)),
-          injectScan: true,
-        } satisfies Partial<LayerSettings>);
-    updateLayer(patch, undefined, 'scan');
-    setNotice({ tone: 'ok', text: `${preset.label} applied to Scan` });
-  };
-
   const applyVisualAsset = (assetId: string) => {
     const asset = getVisualAsset(assetId);
+    if (asset.id === 'scan-frame-box') {
+      setSelectedLayer('scan');
+      updateLayer(
+        {
+          scanStyle: 'frame',
+          scanAnimationName: 'Frame Scan',
+          scanColor: layerForControls.scanColor || '#7c3cff',
+          injectScan: true,
+          layerOrder: ensureLayerInOrder(getLayerOrder(activeLayer), 'scan'),
+        },
+        undefined,
+        'scan',
+      );
+      setNotice({ tone: 'ok', text: 'Frame Scan applied' });
+      return;
+    }
+
     setSelectedLayer('asset');
     updateLayer(
       {
@@ -1042,22 +1091,19 @@ export function PlayableStudio() {
   };
 
   const removeSelectedLayer = () => {
-    if (!selectedVariant) return;
-    const patch =
-      selectedLayer === 'hand'
-        ? ({ injectHand: false } satisfies Partial<LayerSettings>)
-        : selectedLayer === 'scan'
-          ? ({ injectScan: false } satisfies Partial<LayerSettings>)
-          : selectedLayer === 'asset'
-            ? ({ injectAsset: false } satisfies Partial<LayerSettings>)
-            : ({ showCta: false } satisfies Partial<LayerSettings>);
+    if (!selectedVariant && activeSource?.kind !== 'html') return;
+    const order = getLayerOrder(layerForControls);
+    if (!order.includes(selectedLayer)) return;
 
-    setVariants((current) =>
-      current.map((variant) =>
-        variant.id === selectedVariant.id ? { ...variant, settings: { ...variant.settings, ...patch } } : variant,
-      ),
-    );
-    setNotice({ tone: 'ok', text: `Removed ${selectedLayer} from Variant ${selectedVariant.index}` });
+    const nextOrder = order.filter((target) => target !== selectedLayer);
+    const removedLayer = selectedLayer;
+    const nextSelectedLayer = [...nextOrder].reverse()[0] || 'hand';
+    updateLayer(getRemoveLayerPatch(removedLayer, nextOrder), undefined, removedLayer);
+    setSelectedLayer(nextSelectedLayer);
+    setNotice({
+      tone: 'ok',
+      text: selectedVariant ? `Removed ${layerMeta[removedLayer].label} from Variant ${selectedVariant.index}` : `Removed ${layerMeta[removedLayer].label} from HTML`,
+    });
   };
 
   const deleteSelectedVariant = () => {
@@ -1073,26 +1119,44 @@ export function PlayableStudio() {
     setNotice({ tone: 'ok', text: `Deleted Variant ${selectedVariant.index}` });
   };
 
-  const layerForControls = normalizeLayerSettings(selectedVariant?.settings || defaultLayerSettings);
+  const layerForControls = normalizeLayerSettings(activeLayer);
   const selectedLayerLocked = isLayerLocked(layerForControls, selectedLayer);
+  const canEditSelectedLayer = Boolean((selectedVariant || activeSource?.kind === 'html') && getLayerOrder(layerForControls).includes(selectedLayer));
+  const canRemoveSelectedLayer = canEditSelectedLayer && !selectedLayerLocked;
 
   const moveLayer = useCallback(
     (variantId: string, layer: LayerTarget, x: number, y: number, assetId?: string) => {
       const currentLayer = normalizeLayerSettings(variants.find((variant) => variant.id === variantId)?.settings || defaultLayerSettings);
       setSelectedVariantId(variantId);
       setSelectedLayer(layer);
-      if (layer === 'hand') updateLayer(buildHandCompanionPatch(currentLayer, { handX: x, handY: y, injectHand: true }), variantId, 'hand');
+      if (layer === 'hand') {
+        updateLayer(
+          buildHandCompanionPatch(currentLayer, { handX: x, handY: y, injectHand: true, layerOrder: ensureLayerInOrder(getLayerOrder(currentLayer), 'hand') }),
+          variantId,
+          'hand',
+        );
+      }
       if (layer === 'scan') {
-        updateLayer(buildScanCompanionPatch(currentLayer, { scanX: x, scanY: y, injectScan: true }), variantId, 'scan');
+        updateLayer(
+          buildScanCompanionPatch(currentLayer, { scanX: x, scanY: y, injectScan: true, layerOrder: ensureLayerInOrder(getLayerOrder(currentLayer), 'scan') }),
+          variantId,
+          'scan',
+        );
       }
       if (layer === 'asset') {
         updateLayer(
-          { assetX: x, assetY: y, injectAsset: true, ...(assetId ? { assetId } : {}) },
+          { assetX: x, assetY: y, injectAsset: true, layerOrder: ensureLayerInOrder(getLayerOrder(currentLayer), 'asset'), ...(assetId ? { assetId } : {}) },
           variantId,
           'asset',
         );
       }
-      if (layer === 'cta') updateLayer(buildCtaCompanionPatch(currentLayer, { ctaX: x, ctaY: y, showCta: true }), variantId, 'cta');
+      if (layer === 'cta') {
+        updateLayer(
+          buildCtaCompanionPatch(currentLayer, { ctaX: x, ctaY: y, showCta: true, layerOrder: ensureLayerInOrder(getLayerOrder(currentLayer), 'cta') }),
+          variantId,
+          'cta',
+        );
+      }
     },
     [updateLayer, variants],
   );
@@ -1121,10 +1185,22 @@ export function PlayableStudio() {
 
   const setLayerVisibility = (layer: LayerTarget, visible: boolean) => {
     setSelectedLayer(layer);
-    if (layer === 'hand') updateLayer({ injectHand: visible }, undefined, 'hand');
-    if (layer === 'scan') updateLayer({ injectScan: visible }, undefined, 'scan');
-    if (layer === 'asset') updateLayer({ injectAsset: visible }, undefined, 'asset');
-    if (layer === 'cta') updateLayer({ showCta: visible }, undefined, 'cta');
+    const nextOrder = visible ? ensureLayerInOrder(getLayerOrder(layerForControls), layer) : getLayerOrder(layerForControls);
+    if (layer === 'hand') updateLayer({ injectHand: visible, layerOrder: nextOrder }, undefined, 'hand');
+    if (layer === 'scan') {
+      updateLayer(
+        {
+          injectScan: visible,
+          scanStyle: visible && layerForControls.scanStyle === 'none' ? 'frame' : layerForControls.scanStyle,
+          ctaScanGrouped: visible ? layerForControls.ctaScanGrouped : false,
+          layerOrder: nextOrder,
+        },
+        undefined,
+        'scan',
+      );
+    }
+    if (layer === 'asset') updateLayer({ injectAsset: visible, layerOrder: nextOrder }, undefined, 'asset');
+    if (layer === 'cta') updateLayer({ showCta: visible, layerOrder: nextOrder }, undefined, 'cta');
   };
 
   const moveLayerOrder = (layer: LayerTarget, direction: 'up' | 'down') => {
@@ -1266,26 +1342,6 @@ export function PlayableStudio() {
           </div>
         </section>
 
-        <section className="sidebar-section">
-          <div className="section-head">
-            <span>Scan animation library</span>
-            <b>{scanPresets.filter((preset) => preset.id !== 'none').length}</b>
-          </div>
-          <div className="recipe-grid">
-            {scanPresets
-              .filter((preset) => preset.id !== 'none')
-              .map((preset) => (
-              <button key={preset.id} type="button" className="recipe-card" onClick={() => applyScanPreset(preset.id)}>
-                <ScanPresetPreview scanStyle={preset.id} />
-                <span className="recipe-copy">
-                  <strong>{preset.label}</strong>
-                  <small>{preset.note}</small>
-                </span>
-              </button>
-            ))}
-          </div>
-        </section>
-
         <section className="sidebar-section asset-library-section">
           <div className="section-head">
             <span>Asset library</span>
@@ -1336,7 +1392,24 @@ export function PlayableStudio() {
                   type="button"
                   draggable
                   className={`asset-tile ${layerForControls.assetId === asset.id ? 'active' : ''}`}
-                  onDragStart={(event) => setLayerDragData(event, 'asset', asset.id)}
+                  onDragStart={(event) => {
+                    if (asset.id === 'scan-frame-box') {
+                      setLayerDragData(event, 'scan');
+                      setSelectedLayer('scan');
+                      updateLayer(
+                        {
+                          scanStyle: 'frame',
+                          scanAnimationName: 'Frame Scan',
+                          injectScan: true,
+                          layerOrder: ensureLayerInOrder(getLayerOrder(activeLayer), 'scan'),
+                        },
+                        undefined,
+                        'scan',
+                      );
+                      return;
+                    }
+                    setLayerDragData(event, 'asset', asset.id);
+                  }}
                   onClick={() => applyVisualAsset(asset.id)}
                   title={`${asset.label} - ${asset.note}`}
                 >
@@ -1421,7 +1494,7 @@ export function PlayableStudio() {
               />
             ))
           ) : (
-            <EmptyPreview source={activeSource} />
+            <EmptyPreview source={activeSource} htmlPreview={htmlPreviewMarkup} />
           )}
         </section>
 
@@ -1558,7 +1631,7 @@ export function PlayableStudio() {
         <section className="panel-section">
           <div className="section-title">
             <h3>Layer Stack</h3>
-            <span>{selectedVariant ? `V${selectedVariant.index}` : 'none'}</span>
+            <span>{selectedVariant ? `V${selectedVariant.index}` : activeSource?.kind === 'html' ? 'HTML' : 'none'}</span>
           </div>
           <LayerStack
             layer={layerForControls}
@@ -1568,6 +1641,10 @@ export function PlayableStudio() {
             onMove={moveLayerOrder}
             onLockChange={setLayerLock}
           />
+          <button className="secondary-button wide layer-remove-button" type="button" onClick={removeSelectedLayer} disabled={!canRemoveSelectedLayer}>
+            <Trash2 size={15} />
+            Remove Layer
+          </button>
         </section>
 
         <section className="panel-section">
@@ -1670,12 +1747,35 @@ export function PlayableStudio() {
               <div className="animation-parameter-card">
                 <div className="section-title compact">
                   <h3>Animation Parameters</h3>
-                  <span>{layerForControls.scanAnimationName || 'Tap Ripple'}</span>
+                  <span>{layerForControls.scanAnimationName || 'Frame Scan'}</span>
                 </div>
                 <label className="field">
                   <span>Name</span>
                   <input value={layerForControls.scanAnimationName} onChange={(event) => updateScanControls({ scanAnimationName: event.target.value })} />
                 </label>
+                <label className="field color-field">
+                  <span>Scan color</span>
+                  <span className="color-control">
+                    <input
+                      type="color"
+                      value={normalizeHexColor(layerForControls.scanColor)}
+                      onChange={(event) => updateScanControls({ scanColor: event.target.value })}
+                    />
+                    <code>{normalizeHexColor(layerForControls.scanColor)}</code>
+                  </span>
+                </label>
+                <div className="scan-color-swatches" aria-label="Scan color swatches">
+                  {scanColorSwatches.map((color) => (
+                    <button
+                      key={color}
+                      type="button"
+                      className={normalizeHexColor(layerForControls.scanColor).toLowerCase() === color.toLowerCase() ? 'active' : ''}
+                      style={{ ['--swatch-color' as string]: color }}
+                      onClick={() => updateScanControls({ scanColor: color })}
+                      title={color}
+                    />
+                  ))}
+                </div>
                 <div className="field-grid">
                   <label className="field">
                     <span>Loop Times</span>
@@ -1698,7 +1798,7 @@ export function PlayableStudio() {
                 <div className="parameter-subtitle">Opacity</div>
                 <NumberControl label="Start" value={layerForControls.scanOpacityStart} min={0} max={100} onChange={(value) => updateScanControls({ scanOpacityStart: value })} />
                 <NumberControl label="End" value={layerForControls.scanOpacityEnd} min={0} max={100} onChange={(value) => updateScanControls({ scanOpacityEnd: value })} />
-                <div className="parameter-subtitle">Tap Ripple Position</div>
+                <div className="parameter-subtitle">Square Scan Position</div>
                 {layerForControls.ctaScanGrouped ? (
                   <>
                     <NumberControl label="Off X" value={layerForControls.scanOffsetX} min={-220} max={220} onChange={(value) => updateScanControls({ scanOffsetX: value })} />
@@ -1791,10 +1891,6 @@ export function PlayableStudio() {
           )}
 
           <div className="layer-actions">
-            <button className="secondary-button wide" type="button" onClick={removeSelectedLayer} disabled={!selectedVariant}>
-              <EyeOff size={16} />
-              Remove Layer
-            </button>
             <button className="danger-button wide" type="button" onClick={deleteSelectedVariant} disabled={!selectedVariant}>
               <Trash2 size={16} />
               Delete Variant
@@ -1805,12 +1901,12 @@ export function PlayableStudio() {
         <section className="panel-section">
           <div className="section-title">
             <h3>Actions</h3>
-            <span>{variants.length}/4</span>
+            <span>{activeSource?.kind === 'html' && !selectedVariant ? networkLabels[settings.network] : `${variants.length}/4`}</span>
           </div>
           <div className="action-grid">
             <button className="secondary-button wide" type="button" onClick={exportSelected} disabled={busy || (!selectedVariant && !activeSource?.html)}>
               <Download size={16} />
-              Export x5
+              {activeSource?.kind === 'html' && !selectedVariant ? 'Export HTML' : 'Export x5'}
             </button>
             <button className="secondary-button wide" type="button" onClick={exportZip} disabled={busy || !variants.length}>
               <Archive size={16} />
@@ -1842,8 +1938,7 @@ function LayerStack({
   onMove: (layer: LayerTarget, direction: 'up' | 'down') => void;
   onLockChange: (layer: LayerTarget, locked: boolean) => void;
 }) {
-  const order = getLayerOrder(layer);
-  const stackOrder = order.filter((target) => target !== 'scan');
+  const stackOrder = getLayerOrder(layer);
   const topToBottom = [...stackOrder].reverse();
 
   return (
@@ -1883,23 +1978,6 @@ function LayerStack({
         );
       })}
     </div>
-  );
-}
-
-function ScanPresetPreview({ scanStyle }: { scanStyle: LayerSettings['scanStyle'] }) {
-  const hand = getHandAsset(defaultLayerSettings.handId);
-  const scanSpeed = scanStyle === 'sweep' ? 1050 : scanStyle === 'spark' ? 820 : 1200;
-
-  return (
-    <span className="recipe-preview" aria-hidden="true">
-      {scanStyle !== 'none' && (
-        <span
-          className={`preview-scan recipe-preview-scan scan-${scanStyle}`}
-          style={{ ['--scan-speed' as string]: `${scanSpeed}ms` }}
-        />
-      )}
-      <img className="recipe-preview-hand motion-tap" src={hand.src} alt="" />
-    </span>
   );
 }
 
@@ -1965,6 +2043,9 @@ function PreviewCard({
             zIndex,
             rotate: `${layer.scanRotation}deg`,
             ['--scan-speed' as string]: `${layer.scanSpeed}ms`,
+            ['--scan-color' as string]: normalizeHexColor(layer.scanColor),
+            ['--scan-color-rgb' as string]: hexToRgbTriplet(layer.scanColor),
+            ['--scan-size-px' as string]: `${layer.scanSize}px`,
             ...scanAnimationVars,
             animationPlayState: layer.scanAutoplay ? undefined : 'paused',
           }}
@@ -2201,7 +2282,27 @@ function PreviewCard({
   );
 }
 
-function EmptyPreview({ source }: { source: SourceItem | null }) {
+function EmptyPreview({ source, htmlPreview }: { source: SourceItem | null; htmlPreview?: string }) {
+  if (source?.kind === 'html') {
+    return (
+      <div className="html-preview-card">
+        <div className="html-preview-head">
+          <div>
+            <span className="eyebrow">HTML playable</span>
+            <h2>{source.name}</h2>
+          </div>
+          <FileCode2 size={18} />
+        </div>
+        <iframe
+          className="html-preview-frame"
+          title={`${source.name} preview`}
+          srcDoc={htmlPreview || source.html || ''}
+          sandbox="allow-scripts allow-forms allow-pointer-lock"
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="empty-preview">
       <div className="empty-frame">
@@ -2209,7 +2310,7 @@ function EmptyPreview({ source }: { source: SourceItem | null }) {
       </div>
       <div>
         <span className="eyebrow">{source ? source.name : 'No source'}</span>
-        <h2>{source?.kind === 'html' ? 'HTML source selected' : 'Generate 4 variants'}</h2>
+        <h2>Generate 4 variants</h2>
       </div>
     </div>
   );
@@ -2271,16 +2372,50 @@ function normalizeLayerSettings(settings: Partial<LayerSettings>): LayerSettings
     ...defaultLayerSettings,
     ...settings,
   } as LayerSettings;
+  const scanStyle = merged.scanStyle === 'none' ? 'none' : 'frame';
+  const legacyScanNames = new Set(['Tap Ripple', 'Face Scan', 'Pulse Ring', 'Sweep Line', 'Spotlight', 'Border Scan', 'Spark Hit', 'Square Light Scan']);
+  const scanAnimationName =
+    scanStyle === 'none'
+      ? 'None'
+      : !merged.scanAnimationName || legacyScanNames.has(merged.scanAnimationName)
+        ? 'Frame Scan'
+        : merged.scanAnimationName;
   return {
     ...merged,
+    scanStyle,
+    scanAnimationName,
+    scanColor: normalizeHexColor(merged.scanColor),
     layerOrder: getLayerOrder(merged),
   };
 }
 
+function normalizeHexColor(value?: string) {
+  if (value && /^#[0-9a-f]{6}$/i.test(value.trim())) return value.trim();
+  if (value && /^#[0-9a-f]{3}$/i.test(value.trim())) {
+    const [, r, g, b] = value.trim();
+    return `#${r}${r}${g}${g}${b}${b}`;
+  }
+  return '#7c3cff';
+}
+
+function hexToRgbTriplet(value?: string) {
+  const color = normalizeHexColor(value).slice(1);
+  const r = parseInt(color.slice(0, 2), 16);
+  const g = parseInt(color.slice(2, 4), 16);
+  const b = parseInt(color.slice(4, 6), 16);
+  return `${r}, ${g}, ${b}`;
+}
+
 function getLayerOrder(settings: Partial<LayerSettings>): LayerTarget[] {
-  const raw = Array.isArray(settings.layerOrder) ? settings.layerOrder : defaultLayerSettings.layerOrder;
+  const hasExplicitOrder = Array.isArray(settings.layerOrder);
+  const raw = hasExplicitOrder ? settings.layerOrder || [] : defaultLayerSettings.layerOrder;
   const valid = raw.filter((layer): layer is LayerTarget => layer === 'hand' || layer === 'scan' || layer === 'asset' || layer === 'cta');
-  return keepHandAboveCta(ensureLayerInOrder(valid, 'scan', 'asset', 'cta', 'hand'));
+  const next = valid.filter((layer, index) => valid.indexOf(layer) === index);
+  if (settings.injectScan && settings.scanStyle !== 'none' && !next.includes('scan')) next.push('scan');
+  if (settings.injectAsset && !next.includes('asset')) next.push('asset');
+  if (settings.showCta && !next.includes('cta')) next.push('cta');
+  if (settings.injectHand && !next.includes('hand')) next.push('hand');
+  return keepHandAboveCta(next);
 }
 
 function ensureLayerInOrder(order: LayerTarget[], ...layers: LayerTarget[]) {
@@ -2464,11 +2599,12 @@ function layerFromHotspot(hotspot: Hotspot, index: number): LayerSettings {
     ...recipe.layer,
     handMotion: 'tap',
     handSize: recipe.layer.handSize || handSize,
-    scanStyle: 'ripple',
+    scanStyle: 'frame',
+    scanColor: '#7c3cff',
     scanSize: recipe.layer.scanSize || scanSize,
     ctaX: 50,
     ctaY: targetY > 78 ? 90 : 88,
-    ctaScanGrouped: true,
+    ctaScanGrouped: false,
   };
   return mergeLayerSettings(baseLayer, buildCtaCompanionPatch(baseLayer, {}));
 }

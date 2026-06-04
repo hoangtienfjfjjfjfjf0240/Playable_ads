@@ -1,7 +1,7 @@
 import type { ButtonAnimation, HandMotion, LayerSettings, ScanStyle } from './types';
 
 export const defaultLayerSettings: LayerSettings = {
-  layerOrder: ['scan', 'asset', 'cta', 'hand'],
+  layerOrder: ['cta', 'hand'],
   handId: 'hand-08-soft-3d-pointer',
   handMotion: 'tap',
   handX: 64,
@@ -10,24 +10,25 @@ export const defaultLayerSettings: LayerSettings = {
   handRotation: 0,
   handLocked: false,
   injectHand: true,
-  scanStyle: 'ripple',
+  scanStyle: 'frame',
   scanX: 50,
   scanY: 88,
-  scanSize: 136,
+  scanSize: 160,
   scanRotation: 0,
   scanLocked: false,
   scanSpeed: 1200,
   scanDelay: 0,
-  scanLoop: 'loop',
+  scanLoop: 'pingpong',
   scanAutoplay: true,
-  scanAnimationName: 'Tap Ripple',
+  scanAnimationName: 'Frame Scan',
+  scanColor: '#7c3cff',
   scanScaleStart: 0.65,
   scanScaleEnd: 1.22,
   scanOpacityStart: 88,
   scanOpacityEnd: 0,
   scanOffsetX: 0,
   scanOffsetY: 0,
-  injectScan: true,
+  injectScan: false,
   ctaText: 'INSTALL NOW',
   ctaX: 50,
   ctaY: 88,
@@ -36,7 +37,7 @@ export const defaultLayerSettings: LayerSettings = {
   ctaLocked: false,
   showCta: true,
   buttonAnimation: 'pulse',
-  ctaScanGrouped: true,
+  ctaScanGrouped: false,
   assetId: 'heart-pulse-badge',
   assetX: 50,
   assetY: 58,
@@ -48,13 +49,7 @@ export const defaultLayerSettings: LayerSettings = {
 };
 
 export const scanPresets: Array<{ id: ScanStyle; label: string; note: string }> = [
-  { id: 'ripple', label: 'Tap Ripple', note: 'circle under finger' },
-  { id: 'face', label: 'Face Scan', note: 'corner scan, no fill' },
-  { id: 'ring', label: 'Pulse Ring', note: 'tap target' },
-  { id: 'sweep', label: 'Sweep Line', note: 'scan area' },
-  { id: 'spotlight', label: 'Spotlight', note: 'focus item' },
-  { id: 'border', label: 'Border Scan', note: 'object box' },
-  { id: 'spark', label: 'Spark Hit', note: 'tap feedback' },
+  { id: 'frame', label: 'Frame Scan', note: 'color box + handles' },
   { id: 'none', label: 'None', note: 'off' },
 ];
 
