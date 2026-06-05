@@ -1,0 +1,98 @@
+import type { ButtonAsset } from './types';
+
+export const buttonAssets: ButtonAsset[] = [
+  {
+    id: 'orange-3d',
+    label: 'Orange',
+    note: 'install CTA',
+    colorFrom: '#ff9a2f',
+    colorTo: '#f45100',
+    textColor: '#ffffff',
+    shadowColor: '#f45100',
+  },
+  {
+    id: 'blue-3d',
+    label: 'Blue',
+    note: 'clean trust',
+    colorFrom: '#38bdf8',
+    colorTo: '#2563eb',
+    textColor: '#ffffff',
+    shadowColor: '#2563eb',
+  },
+  {
+    id: 'green-3d',
+    label: 'Green',
+    note: 'health action',
+    colorFrom: '#34d399',
+    colorTo: '#059669',
+    textColor: '#ffffff',
+    shadowColor: '#059669',
+  },
+  {
+    id: 'pink-3d',
+    label: 'Pink',
+    note: 'lifestyle',
+    colorFrom: '#fb7185',
+    colorTo: '#e11d48',
+    textColor: '#ffffff',
+    shadowColor: '#e11d48',
+  },
+  {
+    id: 'purple-3d',
+    label: 'Purple',
+    note: 'premium app',
+    colorFrom: '#a78bfa',
+    colorTo: '#7c3aed',
+    textColor: '#ffffff',
+    shadowColor: '#7c3aed',
+  },
+  {
+    id: 'cyan-3d',
+    label: 'Cyan',
+    note: 'scan tech',
+    colorFrom: '#22d3ee',
+    colorTo: '#0891b2',
+    textColor: '#ffffff',
+    shadowColor: '#0891b2',
+  },
+  {
+    id: 'red-3d',
+    label: 'Red',
+    note: 'urgent',
+    colorFrom: '#f87171',
+    colorTo: '#dc2626',
+    textColor: '#ffffff',
+    shadowColor: '#dc2626',
+  },
+  {
+    id: 'gold-3d',
+    label: 'Gold',
+    note: 'reward',
+    colorFrom: '#fbbf24',
+    colorTo: '#d97706',
+    textColor: '#ffffff',
+    shadowColor: '#d97706',
+  },
+  {
+    id: 'graphite-3d',
+    label: 'Graphite',
+    note: 'dark CTA',
+    colorFrom: '#475569',
+    colorTo: '#0f172a',
+    textColor: '#ffffff',
+    shadowColor: '#0f172a',
+  },
+  {
+    id: 'lime-3d',
+    label: 'Lime',
+    note: 'fresh',
+    colorFrom: '#a3e635',
+    colorTo: '#65a30d',
+    textColor: '#102a12',
+    shadowColor: '#65a30d',
+  },
+];
+
+export function getButtonAsset(id: string) {
+  return buttonAssets.find((asset) => asset.id === id) || buttonAssets[0];
+}

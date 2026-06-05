@@ -60,6 +60,16 @@ export interface VisualAsset {
   value?: string;
 }
 
+export interface ButtonAsset {
+  id: string;
+  label: string;
+  note: string;
+  colorFrom: string;
+  colorTo: string;
+  textColor: string;
+  shadowColor: string;
+}
+
 export interface LayerSettings {
   layerOrder: LayerTarget[];
   handId: string;
@@ -97,6 +107,11 @@ export interface LayerSettings {
   ctaLocked: boolean;
   showCta: boolean;
   buttonAnimation: ButtonAnimation;
+  ctaButtonId: string;
+  ctaColorFrom: string;
+  ctaColorTo: string;
+  ctaTextColor: string;
+  ctaShadowColor: string;
   ctaScanGrouped: boolean;
   assetId: string;
   assetX: number;

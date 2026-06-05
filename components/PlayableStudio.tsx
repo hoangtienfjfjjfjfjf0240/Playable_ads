@@ -52,6 +52,7 @@ import {
   patchPlayableHtml,
   safeFileName,
 } from '../lib/export-engine';
+import { buttonAssets, getButtonAsset } from '../lib/button-assets';
 import { getHandAnchorOffset, getHandAsset, handAssets } from '../lib/hand-assets';
 import { detectImageHotspot, getImageDimensions, loadAssetAsDataUrl, readFileAsDataUrl, readFileAsText } from '../lib/image-utils';
 import { buttonPresets, defaultLayerSettings, handMotionPresets, recipePresets, scanPresets } from '../lib/presets';
@@ -78,7 +79,7 @@ type HealthState = {
 
 type Notice = { tone: 'ok' | 'warn' | 'error' | 'busy'; text: string } | null;
 type AiWorkerStatus = 'idle' | 'running' | 'done' | 'error';
-type AssetLibraryTab = 'hand' | 'scan' | 'heart' | 'counter';
+type AssetLibraryTab = 'hand' | 'scan' | 'heart' | 'counter' | 'button';
 type GenerationHistoryEntry = {
   id: string;
   name: string;
@@ -155,6 +156,11 @@ const layerFieldMap: Record<LayerTarget, Array<keyof LayerSettings>> = {
     'ctaLocked',
     'showCta',
     'buttonAnimation',
+    'ctaButtonId',
+    'ctaColorFrom',
+    'ctaColorTo',
+    'ctaTextColor',
+    'ctaShadowColor',
     'ctaScanGrouped',
     'scanX',
     'scanY',
@@ -188,7 +194,20 @@ const lockedLayerFieldMap: Record<LayerTarget, Array<keyof LayerSettings>> = {
     'injectScan',
   ],
   asset: ['assetId', 'assetX', 'assetY', 'assetSize', 'assetRotation', 'assetSpeed', 'injectAsset'],
-  cta: ['ctaText', 'ctaX', 'ctaY', 'ctaWidth', 'ctaRotation', 'showCta', 'buttonAnimation'],
+  cta: [
+    'ctaText',
+    'ctaX',
+    'ctaY',
+    'ctaWidth',
+    'ctaRotation',
+    'showCta',
+    'buttonAnimation',
+    'ctaButtonId',
+    'ctaColorFrom',
+    'ctaColorTo',
+    'ctaTextColor',
+    'ctaShadowColor',
+  ],
 };
 const layerLockFieldMap: Record<LayerTarget, keyof LayerSettings> = {
   hand: 'handLocked',
@@ -392,7 +411,18 @@ function getRecipePatchForLayer(layer: Partial<LayerSettings>, target: LayerTarg
   }
 
   if (target === 'cta') {
-    const patch = pickLayerFields(layer, ['buttonAnimation', 'ctaX', 'ctaY', 'ctaWidth', 'ctaText']);
+    const patch = pickLayerFields(layer, [
+      'buttonAnimation',
+      'ctaButtonId',
+      'ctaColorFrom',
+      'ctaColorTo',
+      'ctaTextColor',
+      'ctaShadowColor',
+      'ctaX',
+      'ctaY',
+      'ctaWidth',
+      'ctaText',
+    ]);
     return Object.keys(patch).length
       ? ({
           ...patch,
@@ -448,9 +478,14 @@ export function PlayableStudio() {
     settings.aiProvider === 'openai' ? Boolean(health?.openAiConfigured) : Boolean(health?.geminiConfigured);
   const activeAiLabel = settings.aiProvider === 'openai' ? 'GPT' : 'Gemini';
   const visibleVisualAssets = useMemo(
-    () => (assetLibraryTab === 'hand' ? [] : visualAssets.filter((asset) => asset.category === assetLibraryTab)),
+    () =>
+      assetLibraryTab === 'hand' || assetLibraryTab === 'button'
+        ? []
+        : visualAssets.filter((asset) => asset.category === assetLibraryTab),
     [assetLibraryTab],
   );
+  const assetLibraryCount =
+    assetLibraryTab === 'hand' ? handAssets.length : assetLibraryTab === 'button' ? buttonAssets.length : visibleVisualAssets.length;
 
   const refreshHealth = useCallback(() => {
     let cancelled = false;
@@ -1081,6 +1116,25 @@ export function PlayableStudio() {
     setNotice({ tone: 'ok', text: `Asset ${asset.label}` });
   };
 
+  const applyButtonAsset = (assetId: string) => {
+    const asset = getButtonAsset(assetId);
+    setSelectedLayer('cta');
+    updateLayer(
+      buildCtaCompanionPatch(layerForControls, {
+        ctaButtonId: asset.id,
+        ctaColorFrom: asset.colorFrom,
+        ctaColorTo: asset.colorTo,
+        ctaTextColor: asset.textColor,
+        ctaShadowColor: asset.shadowColor,
+        showCta: true,
+        layerOrder: ensureLayerInOrder(getLayerOrder(activeLayer), 'cta'),
+      }),
+      undefined,
+      'cta',
+    );
+    setNotice({ tone: 'ok', text: `${asset.label} button applied` });
+  };
+
   const removeSource = (sourceId: string) => {
     setSources((current) => current.filter((source) => source.id !== sourceId));
     if (activeSourceId === sourceId) {
@@ -1345,17 +1399,27 @@ export function PlayableStudio() {
         <section className="sidebar-section asset-library-section">
           <div className="section-head">
             <span>Asset library</span>
-            <b>{assetLibraryTab === 'hand' ? handAssets.length : visibleVisualAssets.length}</b>
+            <b>{assetLibraryCount}</b>
           </div>
           <div className="asset-tabs" role="tablist" aria-label="Asset library">
-            {(['hand', 'scan', 'heart', 'counter'] as AssetLibraryTab[]).map((tab) => (
+            {(['hand', 'button', 'scan', 'heart', 'counter'] as AssetLibraryTab[]).map((tab) => (
               <button
                 key={tab}
                 type="button"
                 className={assetLibraryTab === tab ? 'active' : ''}
                 onClick={() => setAssetLibraryTab(tab)}
               >
-                {tab === 'hand' ? <Hand size={14} /> : tab === 'scan' ? <ScanLine size={14} /> : tab === 'heart' ? <HeartPulse size={14} /> : <Hash size={14} />}
+                {tab === 'hand' ? (
+                  <Hand size={14} />
+                ) : tab === 'button' ? (
+                  <MousePointerClick size={14} />
+                ) : tab === 'scan' ? (
+                  <ScanLine size={14} />
+                ) : tab === 'heart' ? (
+                  <HeartPulse size={14} />
+                ) : (
+                  <Hash size={14} />
+                )}
                 <span>{tab}</span>
               </button>
             ))}
@@ -1381,6 +1445,32 @@ export function PlayableStudio() {
                   title={asset.label}
                 >
                   <img src={asset.src} alt="" />
+                </button>
+              ))}
+            </div>
+          ) : assetLibraryTab === 'button' ? (
+            <div className="button-asset-grid asset-library-grid">
+              {buttonAssets.map((asset) => (
+                <button
+                  key={asset.id}
+                  type="button"
+                  className={`button-asset-tile ${layerForControls.ctaButtonId === asset.id ? 'active' : ''}`}
+                  onClick={() => applyButtonAsset(asset.id)}
+                  title={`${asset.label} - ${asset.note}`}
+                >
+                  <span
+                    className="button-asset-preview"
+                    style={{
+                      ['--cta-from' as string]: asset.colorFrom,
+                      ['--cta-to' as string]: asset.colorTo,
+                      ['--cta-text' as string]: asset.textColor,
+                      ['--cta-shadow-rgb' as string]: hexToRgbTriplet(asset.shadowColor, '#f45100'),
+                    }}
+                  >
+                    {layerForControls.ctaText || 'INSTALL NOW'}
+                  </span>
+                  <strong>{asset.label}</strong>
+                  <small>{asset.note}</small>
                 </button>
               ))}
             </div>
@@ -1875,6 +1965,54 @@ export function PlayableStudio() {
                   ))}
                 </select>
               </label>
+              <div className="field-grid">
+                <label className="field color-field">
+                  <span>Top color</span>
+                  <span className="color-control">
+                    <input
+                      type="color"
+                      value={normalizeHexColor(layerForControls.ctaColorFrom, '#ff9a2f')}
+                      onChange={(event) => updateCtaControls({ ctaButtonId: 'custom', ctaColorFrom: event.target.value })}
+                    />
+                    <code>{normalizeHexColor(layerForControls.ctaColorFrom, '#ff9a2f')}</code>
+                  </span>
+                </label>
+                <label className="field color-field">
+                  <span>Bottom color</span>
+                  <span className="color-control">
+                    <input
+                      type="color"
+                      value={normalizeHexColor(layerForControls.ctaColorTo, '#f45100')}
+                      onChange={(event) => updateCtaControls({ ctaButtonId: 'custom', ctaColorTo: event.target.value })}
+                    />
+                    <code>{normalizeHexColor(layerForControls.ctaColorTo, '#f45100')}</code>
+                  </span>
+                </label>
+              </div>
+              <div className="field-grid">
+                <label className="field color-field">
+                  <span>Text color</span>
+                  <span className="color-control">
+                    <input
+                      type="color"
+                      value={normalizeHexColor(layerForControls.ctaTextColor, '#ffffff')}
+                      onChange={(event) => updateCtaControls({ ctaButtonId: 'custom', ctaTextColor: event.target.value })}
+                    />
+                    <code>{normalizeHexColor(layerForControls.ctaTextColor, '#ffffff')}</code>
+                  </span>
+                </label>
+                <label className="field color-field">
+                  <span>Shadow</span>
+                  <span className="color-control">
+                    <input
+                      type="color"
+                      value={normalizeHexColor(layerForControls.ctaShadowColor, '#f45100')}
+                      onChange={(event) => updateCtaControls({ ctaButtonId: 'custom', ctaShadowColor: event.target.value })}
+                    />
+                    <code>{normalizeHexColor(layerForControls.ctaShadowColor, '#f45100')}</code>
+                  </span>
+                </label>
+              </div>
               <NumberControl label="X" value={layerForControls.ctaX} min={0} max={100} onChange={(value) => updateCtaControls({ ctaX: value })} />
               <NumberControl label="Y" value={layerForControls.ctaY} min={0} max={100} onChange={(value) => updateCtaControls({ ctaY: value })} />
               <NumberControl label="Width" value={layerForControls.ctaWidth} min={44} max={92} onChange={(value) => updateCtaControls({ ctaWidth: value })} />
@@ -2028,6 +2166,7 @@ function PreviewCard({
   const artboardStyle = getArtboardStyle(variant.width, variant.height, orientation, imageFit);
   const anchoredScanCss = shouldAnchorScanToFinger(layer) ? getFingerAnchorCss(layer) : null;
   const scanAnimationVars = getScanAnimationVars(layer);
+  const ctaStyleVars = getCtaStyleVars(layer);
   const orderedLayerMarkup = getLayerOrder(layer).map((target, index) => {
     const zIndex = 5 + index;
     if (target === 'scan' && layer.injectScan && layer.scanStyle !== 'none') {
@@ -2106,6 +2245,7 @@ function PreviewCard({
             width: `${layer.ctaWidth}%`,
             zIndex,
             rotate: `${layer.ctaRotation}deg`,
+            ...ctaStyleVars,
           }}
           onPointerDown={(event) => startDrag('cta', event)}
         >
@@ -2174,21 +2314,26 @@ function PreviewCard({
   const startDrag = (target: LayerTarget, event: ReactPointerEvent<HTMLElement>) => {
     event.preventDefault();
     event.stopPropagation();
+    if (!artboardRef.current) {
+      onSelect();
+      onLayerSelect(target);
+      return;
+    }
+    const dragTarget = resolveDragTargetForPointer(target, layer, artboardRef.current, event.clientX, event.clientY);
     onSelect();
-    onLayerSelect(target);
-    if (isLayerLocked(layer, target)) return;
-    if (!artboardRef.current) return;
+    onLayerSelect(dragTarget);
+    if (isLayerLocked(layer, dragTarget)) return;
     const rect = artboardRef.current.getBoundingClientRect();
 
     const startPoint = getPointInElement(artboardRef.current, event.clientX, event.clientY);
     const startPosition =
-      target === 'scan' && shouldAnchorScanToFinger(layer)
+      dragTarget === 'scan' && shouldAnchorScanToFinger(layer)
         ? getFingerAnchorPercent(layer, rect)
-        : target === 'hand'
+        : dragTarget === 'hand'
         ? { x: layer.handX, y: layer.handY }
-        : target === 'scan'
+        : dragTarget === 'scan'
           ? { x: layer.scanX, y: layer.scanY }
-          : target === 'asset'
+          : dragTarget === 'asset'
             ? { x: layer.assetX, y: layer.assetY }
             : { x: layer.ctaX, y: layer.ctaY };
 
@@ -2197,13 +2342,13 @@ function PreviewCard({
       const point = getPointInElement(artboardRef.current, moveEvent.clientX, moveEvent.clientY);
       const x = clamp(startPosition.x + point.x - startPoint.x, 0, 100);
       const y = clamp(startPosition.y + point.y - startPoint.y, 0, 100);
-      if (target === 'scan' && shouldAnchorScanToFinger(layer)) {
+      if (dragTarget === 'scan' && shouldAnchorScanToFinger(layer)) {
         const nextRect = artboardRef.current.getBoundingClientRect();
         const offset = getScanOffsetFromFingerPoint(layer, nextRect, x, y);
         onLayerPatch('scan', { scanOffsetX: offset.x, scanOffsetY: offset.y, injectScan: true });
         return;
       }
-      onLayerDrop(target, x, y);
+      onLayerDrop(dragTarget, x, y);
     };
     const end = () => {
       window.removeEventListener('pointermove', move);
@@ -2384,22 +2529,26 @@ function normalizeLayerSettings(settings: Partial<LayerSettings>): LayerSettings
     ...merged,
     scanStyle,
     scanAnimationName,
-    scanColor: normalizeHexColor(merged.scanColor),
+    scanColor: normalizeHexColor(merged.scanColor, '#7c3cff'),
+    ctaColorFrom: normalizeHexColor(merged.ctaColorFrom, '#ff9a2f'),
+    ctaColorTo: normalizeHexColor(merged.ctaColorTo, '#f45100'),
+    ctaTextColor: normalizeHexColor(merged.ctaTextColor, '#ffffff'),
+    ctaShadowColor: normalizeHexColor(merged.ctaShadowColor, '#f45100'),
     layerOrder: getLayerOrder(merged),
   };
 }
 
-function normalizeHexColor(value?: string) {
+function normalizeHexColor(value?: string, fallback = '#7c3cff') {
   if (value && /^#[0-9a-f]{6}$/i.test(value.trim())) return value.trim();
   if (value && /^#[0-9a-f]{3}$/i.test(value.trim())) {
     const [, r, g, b] = value.trim();
     return `#${r}${r}${g}${g}${b}${b}`;
   }
-  return '#7c3cff';
+  return fallback;
 }
 
-function hexToRgbTriplet(value?: string) {
-  const color = normalizeHexColor(value).slice(1);
+function hexToRgbTriplet(value?: string, fallback = '#7c3cff') {
+  const color = normalizeHexColor(value, fallback).slice(1);
   const r = parseInt(color.slice(0, 2), 16);
   const g = parseInt(color.slice(2, 4), 16);
   const b = parseInt(color.slice(4, 6), 16);
@@ -2415,7 +2564,7 @@ function getLayerOrder(settings: Partial<LayerSettings>): LayerTarget[] {
   if (settings.injectAsset && !next.includes('asset')) next.push('asset');
   if (settings.showCta && !next.includes('cta')) next.push('cta');
   if (settings.injectHand && !next.includes('hand')) next.push('hand');
-  return keepHandAboveCta(next);
+  return keepHandAboveCta(keepCtaAboveScan(next));
 }
 
 function ensureLayerInOrder(order: LayerTarget[], ...layers: LayerTarget[]) {
@@ -2433,6 +2582,18 @@ function keepHandAboveCta(order: LayerTarget[]) {
   const next: LayerTarget[] = order.filter((layer) => layer !== 'hand');
   const nextCtaIndex = next.indexOf('cta');
   next.splice(nextCtaIndex + 1, 0, 'hand');
+  return next;
+}
+
+function keepCtaAboveScan(order: LayerTarget[]) {
+  const scanIndex = order.indexOf('scan');
+  if (scanIndex < 0) return order;
+  const interactiveIndexes = [order.indexOf('cta'), order.indexOf('hand')].filter((index) => index >= 0);
+  if (!interactiveIndexes.length) return order;
+  const firstInteractiveIndex = Math.min(...interactiveIndexes);
+  if (scanIndex < firstInteractiveIndex) return order;
+  const next: LayerTarget[] = order.filter((layer) => layer !== 'scan');
+  next.splice(firstInteractiveIndex, 0, 'scan');
   return next;
 }
 
@@ -2518,6 +2679,15 @@ function getLayerSelectionBox(layer: LayerSettings, target: LayerTarget) {
   };
 }
 
+function resolveDragTargetForPointer(target: LayerTarget, layer: LayerSettings, artboard: HTMLElement, clientX: number, clientY: number) {
+  if (target === 'cta' || target === 'hand' || !layer.showCta) return target;
+  const cta = artboard.querySelector<HTMLElement>('.preview-cta');
+  if (!cta) return target;
+  const rect = cta.getBoundingClientRect();
+  const insideCta = clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+  return insideCta ? 'cta' : target;
+}
+
 function getScanAnimationVars(layer: LayerSettings) {
   return {
     ['--scan-delay' as string]: `${layer.scanDelay}ms`,
@@ -2527,6 +2697,15 @@ function getScanAnimationVars(layer: LayerSettings) {
     ['--scan-scale-end' as string]: String(layer.scanScaleEnd),
     ['--scan-opacity-start' as string]: String(clamp(layer.scanOpacityStart / 100, 0, 1)),
     ['--scan-opacity-end' as string]: String(clamp(layer.scanOpacityEnd / 100, 0, 1)),
+  };
+}
+
+function getCtaStyleVars(layer: LayerSettings) {
+  return {
+    ['--cta-from' as string]: normalizeHexColor(layer.ctaColorFrom, '#ff9a2f'),
+    ['--cta-to' as string]: normalizeHexColor(layer.ctaColorTo, '#f45100'),
+    ['--cta-text' as string]: normalizeHexColor(layer.ctaTextColor, '#ffffff'),
+    ['--cta-shadow-rgb' as string]: hexToRgbTriplet(layer.ctaShadowColor, '#f45100'),
   };
 }
 

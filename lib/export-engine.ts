@@ -76,8 +76,12 @@ export function generateImagePlayableHtml({
   const scanTop = scanFollowsFinger ? 'calc(var(--target-y) + var(--hand-anchor-y))' : 'var(--scan-y)';
   const scanIterations = layer.scanLoop === 'once' ? '1' : 'infinite';
   const scanDirection = layer.scanLoop === 'pingpong' ? 'alternate' : 'normal';
-  const scanColor = normalizeHexColor(layer.scanColor);
+  const scanColor = normalizeHexColor(layer.scanColor, '#7c3cff');
   const scanRgb = hexToRgbTriplet(scanColor);
+  const ctaColorFrom = normalizeHexColor(layer.ctaColorFrom, '#ff9a2f');
+  const ctaColorTo = normalizeHexColor(layer.ctaColorTo, '#f45100');
+  const ctaTextColor = normalizeHexColor(layer.ctaTextColor, '#ffffff');
+  const ctaShadowRgb = hexToRgbTriplet(layer.ctaShadowColor, '#f45100');
   const frameAspect = orientation === 'landscape' ? 16 / 9 : 9 / 16;
   const frameWidthVh = roundCssNumber(frameAspect * 100);
   const frameHeightVw = roundCssNumber(100 / frameAspect);
@@ -119,7 +123,7 @@ export function generateImagePlayableHtml({
     html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#f1f4fb;font-family:Arial,Helvetica,sans-serif;-webkit-user-select:none;user-select:none}
     *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
     .ps-scene{position:fixed;inset:0;overflow:hidden;background:#f1f4fb;touch-action:manipulation}
-    .ps-frame{--target-x:${clamp(layer.handX, 0, 100)}%;--target-y:${clamp(layer.handY, 0, 100)}%;--scan-x:${clamp(layer.scanX, 0, 100)}%;--scan-y:${clamp(layer.scanY, 0, 100)}%;--asset-x:${clamp(layer.assetX, 0, 100)}%;--asset-y:${clamp(layer.assetY, 0, 100)}%;--cta-x:${clamp(layer.ctaX, 0, 100)}%;--cta-y:${clamp(layer.ctaY, 0, 100)}%;--hand-size:${clamp(layer.handSize, 32, 260)}px;--scan-size:${clamp(layer.scanSize, 48, 360)}px;--asset-size:${clamp(layer.assetSize, 48, 280)}px;--asset-speed:${clamp(layer.assetSpeed, 500, 5000)}ms;--scan-speed:${clamp(layer.scanSpeed, 400, 5000)}ms;--scan-delay:${clamp(layer.scanDelay, 0, 3000)}ms;--scan-iterations:${scanIterations};--scan-direction:${scanDirection};--scan-color:${scanColor};--scan-color-rgb:${scanRgb};--scan-scale-start:${clamp(layer.scanScaleStart, .2, 2)};--scan-scale-end:${clamp(layer.scanScaleEnd, .2, 3)};--scan-opacity-start:${clamp(layer.scanOpacityStart / 100, 0, 1)};--scan-opacity-end:${clamp(layer.scanOpacityEnd / 100, 0, 1)};--cta-width:${clamp(layer.ctaWidth, 44, 92)}%;--hand-anchor-x:${scanAnchorOffset.x}px;--hand-anchor-y:${scanAnchorOffset.y}px;--hand-rotation:${clamp(layer.handRotation || 0, -180, 180)}deg;--scan-rotation:${clamp(layer.scanRotation || 0, -180, 180)}deg;--asset-rotation:${clamp(layer.assetRotation || 0, -180, 180)}deg;--cta-rotation:${clamp(layer.ctaRotation || 0, -180, 180)}deg;--artboard-w:${artboard.widthPercent}%;--artboard-h:${artboard.heightPercent}%;position:absolute;left:50%;top:50%;width:min(100vw,${frameWidthVh}vh);height:min(100vh,${frameHeightVw}vw);transform:translate(-50%,-50%);overflow:hidden;background:#f1f4fb}
+    .ps-frame{--target-x:${clamp(layer.handX, 0, 100)}%;--target-y:${clamp(layer.handY, 0, 100)}%;--scan-x:${clamp(layer.scanX, 0, 100)}%;--scan-y:${clamp(layer.scanY, 0, 100)}%;--asset-x:${clamp(layer.assetX, 0, 100)}%;--asset-y:${clamp(layer.assetY, 0, 100)}%;--cta-x:${clamp(layer.ctaX, 0, 100)}%;--cta-y:${clamp(layer.ctaY, 0, 100)}%;--hand-size:${clamp(layer.handSize, 32, 260)}px;--scan-size:${clamp(layer.scanSize, 48, 360)}px;--asset-size:${clamp(layer.assetSize, 48, 280)}px;--asset-speed:${clamp(layer.assetSpeed, 500, 5000)}ms;--scan-speed:${clamp(layer.scanSpeed, 400, 5000)}ms;--scan-delay:${clamp(layer.scanDelay, 0, 3000)}ms;--scan-iterations:${scanIterations};--scan-direction:${scanDirection};--scan-color:${scanColor};--scan-color-rgb:${scanRgb};--scan-scale-start:${clamp(layer.scanScaleStart, .2, 2)};--scan-scale-end:${clamp(layer.scanScaleEnd, .2, 3)};--scan-opacity-start:${clamp(layer.scanOpacityStart / 100, 0, 1)};--scan-opacity-end:${clamp(layer.scanOpacityEnd / 100, 0, 1)};--cta-width:${clamp(layer.ctaWidth, 44, 92)}%;--cta-from:${ctaColorFrom};--cta-to:${ctaColorTo};--cta-text:${ctaTextColor};--cta-shadow-rgb:${ctaShadowRgb};--hand-anchor-x:${scanAnchorOffset.x}px;--hand-anchor-y:${scanAnchorOffset.y}px;--hand-rotation:${clamp(layer.handRotation || 0, -180, 180)}deg;--scan-rotation:${clamp(layer.scanRotation || 0, -180, 180)}deg;--asset-rotation:${clamp(layer.assetRotation || 0, -180, 180)}deg;--cta-rotation:${clamp(layer.ctaRotation || 0, -180, 180)}deg;--artboard-w:${artboard.widthPercent}%;--artboard-h:${artboard.heightPercent}%;position:absolute;left:50%;top:50%;width:min(100vw,${frameWidthVh}vh);height:min(100vh,${frameHeightVw}vw);transform:translate(-50%,-50%);overflow:hidden;background:#f1f4fb}
     .ps-backdrop{position:absolute;inset:-3%;width:106%;height:106%;object-fit:cover;filter:blur(18px) saturate(1.04);opacity:.34;transform:scale(1.02);display:block}
     .ps-artboard{position:absolute;left:50%;top:50%;width:var(--artboard-w);height:var(--artboard-h);transform:translate(-50%,-50%);overflow:hidden;background:#f1f4fb}
     .ps-creative{position:absolute;inset:0;width:100%;height:100%;object-fit:${imageFit};display:block;background:#f1f4fb}
@@ -143,8 +147,8 @@ export function generateImagePlayableHtml({
     .scan-frame:before{content:"";position:absolute;left:8%;right:8%;top:-24%;height:22%;border-radius:999px;background:linear-gradient(180deg,transparent,rgba(255,255,255,.96),rgba(var(--scan-color-rgb),.58),transparent);box-shadow:0 0 24px rgba(var(--scan-color-rgb),.72);animation:psFrameBeam var(--scan-speed) ease-in-out var(--scan-delay) var(--scan-iterations) var(--scan-direction) both;animation-play-state:${layer.scanAutoplay ? 'running' : 'paused'}}
     .scan-frame:after{content:"";position:absolute;inset:10px;border:1px solid rgba(255,255,255,.54);border-radius:6px;box-shadow:inset 0 0 18px rgba(var(--scan-color-rgb),.22)}
     .scan-spark{border-radius:999px;background:rgba(255,243,196,.26);box-shadow:0 0 0 0 rgba(245,158,11,.58),0 0 28px rgba(245,158,11,.52);animation:psSpark var(--scan-speed) ease-out infinite}
-    .ps-cta{position:absolute;left:var(--cta-x);top:var(--cta-y);z-index:8;width:var(--cta-width);max-width:88%;min-height:54px;padding:0 22px;border:0;border-radius:10px;background:linear-gradient(180deg,#ff8a1f,#f45100);color:#fff;font-size:19px;font-weight:900;letter-spacing:0;text-align:center;box-shadow:0 12px 24px rgba(0,0,0,.30);transform:translate(-50%,-50%);rotate:var(--cta-rotation);cursor:pointer}
-    .btn-pulse{animation:psCtaPulse 1.08s ease-in-out infinite}.btn-bounce{animation:psCtaBounce .95s ease-in-out infinite}.btn-shake{animation:psCtaShake .48s ease-in-out infinite}.btn-breath{animation:psCtaBreath 1.15s ease-in-out infinite}.btn-shine{overflow:hidden;background:#f45100}.btn-shine:after{content:"";position:absolute;inset:0;background:linear-gradient(110deg,transparent 0%,rgba(255,255,255,.58) 45%,transparent 70%);transform:translateX(-120%);animation:psCtaShine 1.25s linear infinite}
+    .ps-cta{position:absolute;left:var(--cta-x);top:var(--cta-y);z-index:8;width:var(--cta-width);max-width:88%;min-height:54px;padding:0 22px;border:0;border-radius:10px;background:linear-gradient(180deg,var(--cta-from),var(--cta-to));color:var(--cta-text);font-size:19px;font-weight:900;letter-spacing:0;text-align:center;text-shadow:0 1px 1px rgba(0,0,0,.22);box-shadow:inset 0 1px 0 rgba(255,255,255,.46),inset 0 -5px 0 rgba(0,0,0,.14),0 12px 24px rgba(var(--cta-shadow-rgb),.34);transform:translate(-50%,-50%);rotate:var(--cta-rotation);cursor:pointer}
+    .btn-pulse{animation:psCtaPulse 1.08s ease-in-out infinite}.btn-bounce{animation:psCtaBounce .95s ease-in-out infinite}.btn-shake{animation:psCtaShake .48s ease-in-out infinite}.btn-breath{animation:psCtaBreath 1.15s ease-in-out infinite}.btn-shine{overflow:hidden;background:linear-gradient(180deg,var(--cta-from),var(--cta-to))}.btn-shine:after{content:"";position:absolute;inset:0;background:linear-gradient(110deg,transparent 0%,rgba(255,255,255,.58) 45%,transparent 70%);transform:translateX(-120%);animation:psCtaShine 1.25s linear infinite}
     .motion-tap{animation:psHandTap 1.05s ease-in-out infinite}.motion-doubleTap{animation:psHandDoubleTap 1.18s ease-in-out infinite}.motion-press{animation:psHandPress 1.05s ease-in-out infinite}.motion-bounce{animation:psHandBounce 1s ease-in-out infinite}.motion-swipeX{animation:psHandSwipeX 1.15s ease-in-out infinite}.motion-swipeY{animation:psHandSwipeY 1.15s ease-in-out infinite}.motion-drag{animation:psHandDrag 1.35s ease-in-out infinite}.motion-shake{animation:psHandShake .62s ease-in-out infinite}.motion-wave{animation:psHandWave 1.08s ease-in-out infinite}
     @keyframes psSweep{0%{left:-16%}100%{left:116%}}@keyframes psRipple{0%{opacity:var(--scan-opacity-start);transform:translate(-50%,-50%) scale(var(--scan-scale-start));box-shadow:0 0 0 0 rgba(125,221,255,.42),0 0 18px rgba(125,221,255,.42)}72%{box-shadow:0 0 0 18px rgba(125,221,255,0),0 0 28px rgba(125,221,255,.5)}100%{opacity:var(--scan-opacity-end);transform:translate(-50%,-50%) scale(var(--scan-scale-end));box-shadow:0 0 0 24px rgba(125,221,255,0),0 0 18px rgba(125,221,255,.2)}}@keyframes psRippleHalo{0%{transform:scale(var(--scan-scale-start));opacity:var(--scan-opacity-start)}100%{transform:scale(var(--scan-scale-end));opacity:var(--scan-opacity-end)}}@keyframes psFaceScan{0%,100%{transform:translate(-50%,-50%) scale(.98);opacity:.88}50%{transform:translate(-50%,-50%) scale(1.04);opacity:1}}@keyframes psFaceLine{0%{top:18%;opacity:.18}50%{opacity:1}100%{top:82%;opacity:.18}}@keyframes psRing{0%{transform:translate(-50%,-50%) scale(.72);opacity:1;box-shadow:0 0 0 0 rgba(0,213,255,.52)}100%{transform:translate(-50%,-50%) scale(1.18);opacity:.08;box-shadow:0 0 0 24px rgba(0,213,255,0)}}@keyframes psSpot{0%,100%{transform:translate(-50%,-50%) scale(.92);opacity:.88}50%{transform:translate(-50%,-50%) scale(1.08);opacity:1}}@keyframes psBorderBeam{0%{top:-18%;opacity:.2}50%{opacity:1}100%{top:100%;opacity:.2}}@keyframes psFrameBeam{0%{top:-24%;opacity:.18}50%{opacity:.96}100%{top:102%;opacity:.18}}@keyframes psSpark{0%{transform:translate(-50%,-50%) scale(.55);opacity:1;box-shadow:0 0 0 0 rgba(245,158,11,.56)}100%{transform:translate(-50%,-50%) scale(1.35);opacity:0;box-shadow:0 0 0 26px rgba(245,158,11,0)}}
     @keyframes psAssetPulse{0%,100%{transform:translate(-50%,-50%) scale(1)}50%{transform:translate(-50%,-50%) scale(1.08)}}@keyframes psAssetBlink{0%,100%{opacity:1}50%{opacity:.46}}@keyframes psAssetSweep{0%{left:-20%}100%{left:118%}}@keyframes psAssetWave{0%,100%{transform:translateX(-7%)}50%{transform:translateX(7%)}}@keyframes psAssetCount{0%,100%{transform:scale(1)}50%{transform:scale(1.08)}}
@@ -300,9 +304,13 @@ function injectButtonAnimation(html: string, preset: LayerSettings['buttonAnimat
 
 function injectCtaPosition(html: string, layer: LayerSettings, selector: string) {
   const safeSelector = selector.trim() || 'button';
+  const ctaColorFrom = normalizeHexColor(layer.ctaColorFrom, '#ff9a2f');
+  const ctaColorTo = normalizeHexColor(layer.ctaColorTo, '#f45100');
+  const ctaTextColor = normalizeHexColor(layer.ctaTextColor, '#ffffff');
+  const ctaShadowRgb = hexToRgbTriplet(layer.ctaShadowColor, '#f45100');
   const code = `
 <style id="ps-cta-position-style">
-.ps-cta-positioned{position:fixed!important;left:${clamp(layer.ctaX, 0, 100)}vw!important;top:${clamp(layer.ctaY, 0, 100)}vh!important;right:auto!important;bottom:auto!important;z-index:2147482999!important;transform:translate(-50%,-50%)!important;rotate:${clamp(layer.ctaRotation || 0, -180, 180)}deg!important}
+.ps-cta-positioned{position:fixed!important;left:${clamp(layer.ctaX, 0, 100)}vw!important;top:${clamp(layer.ctaY, 0, 100)}vh!important;right:auto!important;bottom:auto!important;width:${clamp(layer.ctaWidth, 44, 92)}vw!important;max-width:88vw!important;min-height:54px!important;padding:0 22px!important;border:0!important;border-radius:10px!important;background:linear-gradient(180deg,${ctaColorFrom},${ctaColorTo})!important;color:${ctaTextColor}!important;font-weight:900!important;text-align:center!important;text-shadow:0 1px 1px rgba(0,0,0,.22)!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.46),inset 0 -5px 0 rgba(0,0,0,.14),0 12px 24px rgba(${ctaShadowRgb},.34)!important;z-index:2147482999!important;transform:translate(-50%,-50%)!important;rotate:${clamp(layer.ctaRotation || 0, -180, 180)}deg!important}
 .ps-cta-positioned.ps-btn-anim-pulse{animation:psPulsePos 1.1s infinite ease-in-out!important}
 .ps-cta-positioned.ps-btn-anim-bounce{animation:psBouncePos .9s infinite ease-in-out!important}
 .ps-cta-positioned.ps-btn-anim-shake{animation:psShakePos .45s infinite ease-in-out!important}
@@ -334,7 +342,7 @@ function injectScan(html: string, layer: LayerSettings) {
   const scanTop = shouldAnchorScanToFinger(layer) ? `calc(${clamp(layer.handY, 0, 100)}vh + ${anchorOffset.y}px)` : `${clamp(layer.scanY, 0, 100)}vh`;
   const scanIterations = layer.scanLoop === 'once' ? '1' : 'infinite';
   const scanDirection = layer.scanLoop === 'pingpong' ? 'alternate' : 'normal';
-  const scanColor = normalizeHexColor(layer.scanColor);
+  const scanColor = normalizeHexColor(layer.scanColor, '#7c3cff');
   const scanRgb = hexToRgbTriplet(scanColor);
   const code = `
 <style id="ps-scan-style">
@@ -449,7 +457,7 @@ function getLayerOrder(layer: LayerSettings): LayerTarget[] {
   if (layer.injectAsset && !next.includes('asset')) next.push('asset');
   if (layer.showCta && !next.includes('cta')) next.push('cta');
   if (layer.injectHand && !next.includes('hand')) next.push('hand');
-  return keepHandAboveCta(next);
+  return keepHandAboveCta(keepCtaAboveScan(next));
 }
 
 function getLayerZ(layer: LayerSettings, target: LayerTarget) {
@@ -482,6 +490,18 @@ function keepHandAboveCta(order: LayerTarget[]) {
   const next: LayerTarget[] = order.filter((target) => target !== 'hand');
   const nextCtaIndex = next.indexOf('cta');
   next.splice(nextCtaIndex + 1, 0, 'hand');
+  return next;
+}
+
+function keepCtaAboveScan(order: LayerTarget[]) {
+  const scanIndex = order.indexOf('scan');
+  if (scanIndex < 0) return order;
+  const interactiveIndexes = [order.indexOf('cta'), order.indexOf('hand')].filter((index) => index >= 0);
+  if (!interactiveIndexes.length) return order;
+  const firstInteractiveIndex = Math.min(...interactiveIndexes);
+  if (scanIndex < firstInteractiveIndex) return order;
+  const next: LayerTarget[] = order.filter((target) => target !== 'scan');
+  next.splice(firstInteractiveIndex, 0, 'scan');
   return next;
 }
 
@@ -543,17 +563,17 @@ function roundCssNumber(value: number) {
   return Math.round(value * 1000) / 1000;
 }
 
-function normalizeHexColor(value?: string) {
+function normalizeHexColor(value?: string, fallback = '#7c3cff') {
   if (value && /^#[0-9a-f]{6}$/i.test(value.trim())) return value.trim();
   if (value && /^#[0-9a-f]{3}$/i.test(value.trim())) {
     const [, r, g, b] = value.trim();
     return `#${r}${r}${g}${g}${b}${b}`;
   }
-  return '#7c3cff';
+  return fallback;
 }
 
-function hexToRgbTriplet(value?: string) {
-  const color = normalizeHexColor(value).slice(1);
+function hexToRgbTriplet(value?: string, fallback = '#7c3cff') {
+  const color = normalizeHexColor(value, fallback).slice(1);
   const r = parseInt(color.slice(0, 2), 16);
   const g = parseInt(color.slice(2, 4), 16);
   const b = parseInt(color.slice(4, 6), 16);
