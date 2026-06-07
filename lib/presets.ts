@@ -1,7 +1,13 @@
-import type { ButtonAnimation, HandMotion, LayerSettings, ScanStyle } from './types';
+import type { ButtonAnimation, HandMotion, LayerSettings, ScanStyle, TextCueAnimation } from './types';
 
 export const defaultLayerSettings: LayerSettings = {
   layerOrder: ['cta', 'hand'],
+  imageX: 50,
+  imageY: 50,
+  imageWidth: 0,
+  imageHeight: 0,
+  imageRotation: 0,
+  imageLocked: false,
   handId: 'hand-08-soft-3d-pointer',
   handMotion: 'tap',
   handX: 64,
@@ -13,7 +19,7 @@ export const defaultLayerSettings: LayerSettings = {
   scanStyle: 'frame',
   scanX: 50,
   scanY: 88,
-  scanSize: 160,
+  scanSize: 136,
   scanRotation: 0,
   scanLocked: false,
   scanSpeed: 1200,
@@ -43,7 +49,19 @@ export const defaultLayerSettings: LayerSettings = {
   ctaTextColor: '#ffffff',
   ctaShadowColor: '#f45100',
   ctaScanGrouped: false,
-  assetId: 'heart-pulse-badge',
+  cueText: 'Tap to continue',
+  cueX: 50,
+  cueY: 77,
+  cueWidth: 74,
+  cueSize: 22,
+  cueRotation: 0,
+  cueLocked: false,
+  cueAnimation: 'float',
+  cueColor: '#ffffff',
+  cueBgColor: '#111827',
+  cueShadowColor: '#000000',
+  showCue: false,
+  assetId: 'scan-frame-box',
   assetX: 50,
   assetY: 58,
   assetSize: 116,
@@ -76,6 +94,17 @@ export const buttonPresets: Array<{ id: ButtonAnimation; label: string }> = [
   { id: 'shine', label: 'Shine' },
   { id: 'shake', label: 'Shake' },
   { id: 'breath', label: 'Breath' },
+  { id: 'none', label: 'None' },
+];
+
+export const textCuePresets: Array<{ id: TextCueAnimation; label: string }> = [
+  { id: 'float', label: 'Float' },
+  { id: 'pulse', label: 'Pulse' },
+  { id: 'bounce', label: 'Bounce' },
+  { id: 'shake', label: 'Shake' },
+  { id: 'breath', label: 'Breath' },
+  { id: 'blink', label: 'Blink' },
+  { id: 'typewriter', label: 'Typewriter' },
   { id: 'none', label: 'None' },
 ];
 

@@ -1,5 +1,8 @@
 import { NextResponse } from 'next/server';
+import pLimit from 'p-limit';
+import sharp from 'sharp';
 import { asDataUrl, dataUrlToBuffer } from '../../../../lib/server-data';
+import { DEFAULT_VARIANT_COUNT, MAX_VARIANT_COUNT, normalizeVariantCount } from '../../../../lib/playable-plan';
 import type { AiProvider } from '../../../../lib/types';
 
 export const runtime = 'nodejs';
@@ -35,6 +38,8 @@ type PreparedGeneration = {
   prompt: string;
   aspectRatio: string;
   count: number;
+  preferResponses: boolean;
+  targetSize?: number;
 };
 
 function prepareGeneration(body: Record<string, unknown>): PreparedGeneration {
@@ -52,18 +57,21 @@ function prepareGeneration(body: Record<string, unknown>): PreparedGeneration {
     imageDataUrl,
     prompt: String(body.prompt || ''),
     aspectRatio: String(body.aspectRatio || '9:16'),
-    count: Math.max(1, Math.min(4, Number(body.count || 4))),
+    count: normalizeVariantCount(body.count || DEFAULT_VARIANT_COUNT),
+    preferResponses: body.preferResponses === true,
+    targetSize: Number.isFinite(Number(body.targetSize)) ? Math.max(256, Math.min(2048, Math.round(Number(body.targetSize)))) : undefined,
   };
 }
 
 async function generateVariants(body: Record<string, unknown>) {
-  const { apiKey, provider, model, imageDataUrl, prompt, aspectRatio, count } = prepareGeneration(body);
+  const { apiKey, provider, model, imageDataUrl, prompt, aspectRatio, count, preferResponses, targetSize } = prepareGeneration(body);
   const startedAt = Date.now();
   console.log(`[ai] generating ${count} variants in parallel with ${provider}:${model}`);
 
+  const limit = pLimit(getImageConcurrency());
   const results = await Promise.allSettled(
     Array.from({ length: count }, (_, index) =>
-      generateOneVariant({ apiKey, provider, model, imageDataUrl, prompt, aspectRatio, index, count }),
+      limit(() => generateOneVariant({ apiKey, provider, model, imageDataUrl, prompt, aspectRatio, preferResponses, targetSize, index, count })),
     ),
   );
 
@@ -98,8 +106,9 @@ function streamVariantResponse(body: Record<string, unknown>, startedAt: number)
       );
       send({ type: 'start', count: prepared.count });
 
+      const limit = pLimit(getImageConcurrency());
       Array.from({ length: prepared.count }).forEach((_, index) => {
-        generateOneVariant({ ...prepared, index, count: prepared.count })
+        limit(() => generateOneVariant({ ...prepared, index, count: prepared.count }))
           .then((variant) => {
             produced += 1;
             send({ type: 'variant', index, variant });
@@ -137,6 +146,8 @@ async function generateOneVariant({
   imageDataUrl,
   prompt,
   aspectRatio,
+  preferResponses,
+  targetSize,
   index,
   count,
 }: {
@@ -146,6 +157,8 @@ async function generateOneVariant({
   imageDataUrl: string;
   prompt: string;
   aspectRatio: string;
+  preferResponses: boolean;
+  targetSize?: number;
   index: number;
   count: number;
 }) {
@@ -154,14 +167,31 @@ async function generateOneVariant({
   let generated: { dataUrl: string; revisedPrompt?: string };
 
   try {
-    generated = await callImageEditGeneration({
-      apiKey,
-      model: provider === 'openai' ? AI_IMAGE_MODEL : model,
-      imageDataUrl,
-      prompt: variantPrompt,
-    });
+    if (provider === 'openai' && preferResponses) {
+      generated = await callResponsesImageGeneration({ apiKey, model, imageDataUrl, prompt: variantPrompt });
+      console.log(`[ai] variant ${index + 1}/${count} used responses-first`);
+    } else {
+      generated = await callImageEditGeneration({
+        apiKey,
+        model: provider === 'openai' ? AI_IMAGE_MODEL : model,
+        imageDataUrl,
+        prompt: variantPrompt,
+      });
+    }
   } catch (editError) {
-    if (provider !== 'openai' && model !== GEMINI_FALLBACK_IMAGE_MODEL) {
+    if (provider === 'openai' && preferResponses) {
+      try {
+        generated = await callImageEditGeneration({
+          apiKey,
+          model: AI_IMAGE_MODEL,
+          imageDataUrl,
+          prompt: variantPrompt,
+          cause: editError instanceof Error ? editError : undefined,
+        });
+      } catch (editFallbackError) {
+        throw new Error(`${getErrorMessage(editError)}; image edit fallback failed: ${getErrorMessage(editFallbackError)}`);
+      }
+    } else if (provider !== 'openai' && model !== GEMINI_FALLBACK_IMAGE_MODEL) {
       try {
         generated = await callImageEditGeneration({
           apiKey,
@@ -186,11 +216,54 @@ async function generateOneVariant({
   }
 
   console.log(`[ai] variant ${index + 1}/${count} done in ${Date.now() - startedAt}ms`);
+  const normalized = await normalizeGeneratedImageToAspect(generated.dataUrl, aspectRatio, targetSize);
+
   return {
     name: `ai_variant_${index + 1}.png`,
-    dataUrl: generated.dataUrl,
+    dataUrl: normalized,
     revisedPrompt: generated.revisedPrompt || '',
   };
+}
+
+async function normalizeGeneratedImageToAspect(dataUrl: string, aspectRatio: string, targetSize?: number) {
+  const ratio = parseAspectRatio(aspectRatio);
+  if (!ratio) return dataUrl;
+
+  const target = getTargetDimensions(ratio, targetSize);
+  const { buffer } = dataUrlToBuffer(dataUrl);
+  const output = await sharp(buffer, { failOn: 'none' })
+    .rotate()
+    .resize(target.width, target.height, {
+      fit: 'cover',
+      position: 'centre',
+      withoutEnlargement: false,
+    })
+    .png()
+    .toBuffer();
+
+  return asDataUrl(output.toString('base64'), 'png');
+}
+
+function parseAspectRatio(value: string) {
+  const match = value.trim().match(/^(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)$/);
+  if (!match) return 0;
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return 0;
+  return width / height;
+}
+
+function getTargetDimensions(ratio: number, targetSize?: number) {
+  if (Math.abs(ratio - 1) < 0.001) {
+    const size = targetSize || 1024;
+    return { width: size, height: size };
+  }
+  if (ratio > 1) {
+    const height = 900;
+    return { width: Math.round(height * ratio), height };
+  }
+  const width = 900;
+  return { width, height: Math.round(width / ratio) };
 }
 
 function parseAiProvider(value: unknown): AiProvider {
@@ -204,26 +277,51 @@ function getDefaultModel(provider: AiProvider) {
 }
 
 function buildVariantPrompt(prompt: string, index: number, count: number, aspectRatio: string) {
+  const cleanPrompt = sanitizeBackgroundPrompt(prompt);
   const directions = [
     'fresh composition, same product intent, stronger visual hierarchy',
     'new color balance and layout, same core message and mobile readability',
-    'alternate background and content arrangement, with a clean lower CTA-safe zone',
+    'alternate background and content arrangement, without leaving forced empty areas',
     'more polished ad creative, same aspect ratio and product category',
   ];
 
   return [
-    `Create variant ${index + 1} of ${count} from the reference playable ad image.`,
+    `Create variant ${index + 1} of ${Math.min(count, MAX_VARIANT_COUNT)} from the reference playable ad image.`,
     `Target aspect ratio: ${aspectRatio}.`,
     `Use a full-bleed ${aspectRatio} mobile canvas that fills the entire image edge to edge.`,
-    prompt,
+    cleanPrompt,
+    'Language rule: use English for all in-ad text by default. If the prompt explicitly says "Language: <language>" or requests another language, use that language consistently for headlines and background text.',
     directions[index % directions.length],
-    'Return a complete mobile ad creative image only.',
+    'Return the static background creative image only; runtime hand, scan, text cue, click cue, and CTA button overlays will be added separately.',
+    'Treat any prompt mention of hand, cue text, CTA text, tap instruction, or scan box as runtime overlay guidance, not bitmap content.',
     'Do not add letterboxing, pillarboxing, black bars, outer borders, padding, or empty margins.',
-    'Do not include phone frames, editor UI, hand cursor, scan target boxes, timelines, or export controls.',
-    'Leave a clean area near the lower third/lower quarter for a real CTA button and animation overlay.',
+    'Do not include editor UI, hand cursor, tap finger, scan target boxes, CTA buttons, install buttons, tap/click cue text, timelines, or export controls.',
+    'Keep the composition full-frame and balanced; do not reserve a fake empty lower third just for overlays.',
   ]
     .filter(Boolean)
     .join('\n');
+}
+
+function sanitizeBackgroundPrompt(prompt: string) {
+  let next = prompt.trim();
+  const overlayOnlyPhrases = [
+    /(?:^|[,\n.;])\s*(?:text\s*cue|cue\s*text|instruction\s*text|text\s*huong\s*dan|text\s*keu\s*goi)\s*(?:ghi\s*l[àa]|l[àa]|is|=|:)\s*["“']?[^"\n\r,.;]+["”']?/giu,
+    /(?:^|[,\n.;])\s*(?:cta\s*text|button\s*text|cta\s*button|button\s*label)\s*(?:ghi\s*l[àa]|l[àa]|is|=|:)\s*["“']?[^"\n\r,.;]+["”']?/giu,
+    /(?:^|[,\n.;])\s*(?:tay|hand(?:\s*cursor)?)(?:(?![,\n.;]).)*/giu,
+    /(?:^|[,\n.;])\s*(?:scan\s*box|scan\s*target|khung\s*scan|tap\s*text|click\s*cue|tap\s*cue|cta\s*button|install\s*button)(?:(?![,\n.;]).)*/giu,
+  ];
+
+  for (const pattern of overlayOnlyPhrases) {
+    next = next.replace(pattern, ' ');
+  }
+
+  next = next
+    .replace(/\s*([,.;])\s*/g, '$1 ')
+    .replace(/\s+/g, ' ')
+    .replace(/^[,.;\s]+|[,.;\s]+$/g, '')
+    .trim();
+
+  return next || prompt.trim();
 }
 
 async function callResponsesImageGeneration({
@@ -364,4 +462,9 @@ function getNestedString(value: unknown, keys: string[]) {
 
 function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error || 'Unknown error');
+}
+
+function getImageConcurrency() {
+  const value = Number(process.env.AI_IMAGE_CONCURRENCY || 4);
+  return Number.isFinite(value) ? Math.max(1, Math.min(8, Math.round(value))) : 4;
 }

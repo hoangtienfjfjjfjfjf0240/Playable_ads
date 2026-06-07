@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import { AnimatePresence, motion } from 'motion/react';
 import {
@@ -9,7 +9,6 @@ import {
   ArrowUp,
   CheckCircle2,
   Crosshair,
-  Database,
   Download,
   Eye,
   EyeOff,
@@ -20,7 +19,6 @@ import {
   HeartPulse,
   History,
   ImagePlus,
-  Layers3,
   Link2,
   Lock,
   Loader2,
@@ -40,13 +38,21 @@ import {
   WandSparkles,
   X,
 } from 'lucide-react';
+import type { Session } from '@supabase/supabase-js';
 import type { DragEvent } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import type JSZip from 'jszip';
+import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import {
   createDefaultProjectSettings,
+  defaultProjectPrompt,
   generateImagePlayableHtml,
+  getImageFrameLayout,
+  legacyDefaultProjectPrompt,
+  normalizeProjectSettings,
+  resolveProjectStoreConfig,
   networkExportTargets,
   networkLabels,
   patchPlayableHtml,
@@ -55,7 +61,17 @@ import {
 import { buttonAssets, getButtonAsset } from '../lib/button-assets';
 import { getHandAnchorOffset, getHandAsset, handAssets } from '../lib/hand-assets';
 import { detectImageHotspot, getImageDimensions, loadAssetAsDataUrl, readFileAsDataUrl, readFileAsText } from '../lib/image-utils';
-import { buttonPresets, defaultLayerSettings, handMotionPresets, recipePresets, scanPresets } from '../lib/presets';
+import {
+  DEFAULT_VARIANT_COUNT,
+  MAX_VARIANT_COUNT,
+  heuristicPlanFromHotspot,
+  hotspotFromPlayablePlan,
+  layerFromPlayablePlan,
+  normalizeVariantCount,
+  playableIntentLabels,
+} from '../lib/playable-plan';
+import { buttonPresets, defaultLayerSettings, handMotionPresets, recipePresets, scanPresets, textCuePresets } from '../lib/presets';
+import { getSupabaseBrowser } from '../lib/supabase-browser';
 import { getVisualAsset, visualAssets } from '../lib/visual-assets';
 import type {
   AiVariantResponseItem,
@@ -66,7 +82,15 @@ import type {
   NetworkTarget,
   PlayableVariant,
   ProjectSettings,
+  ScanStyle,
   SourceItem,
+  StudioAppSummary,
+  StudioDashboardPayload,
+  StudioProjectDetail,
+  StudioProjectSummary,
+  StudioCloneImportPayload,
+  StudioUserSummary,
+  StudioWorkspaceSummary,
 } from '../lib/types';
 
 type HealthState = {
@@ -74,12 +98,16 @@ type HealthState = {
   openAiConfigured?: boolean;
   geminiConfigured?: boolean;
   supabaseConfigured: boolean;
+  supabaseReady?: boolean;
+  supabaseError?: string;
   ok: boolean;
+  error?: string;
 } | null;
 
 type Notice = { tone: 'ok' | 'warn' | 'error' | 'busy'; text: string } | null;
 type AiWorkerStatus = 'idle' | 'running' | 'done' | 'error';
-type AssetLibraryTab = 'hand' | 'scan' | 'heart' | 'counter' | 'button';
+type AssetLibraryTab = 'hand' | 'scan' | 'button';
+type FrameMetrics = { width: number; height: number };
 type GenerationHistoryEntry = {
   id: string;
   name: string;
@@ -90,6 +118,10 @@ type GenerationHistoryEntry = {
   variants: PlayableVariant[];
 };
 
+type PlayableStudioProps = {
+  appId?: string;
+};
+
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, Number.isNaN(value) ? min : value));
 
 const uid = () => {
@@ -97,9 +129,31 @@ const uid = () => {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 };
 
+const createWorkerStatuses = (count: number, status: AiWorkerStatus) =>
+  Array.from({ length: normalizeVariantCount(count) }, () => status);
+
+async function mapWithConcurrency<T, R>(items: T[], concurrency: number, worker: (item: T, index: number) => Promise<R>) {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const workerCount = Math.min(Math.max(1, concurrency), Math.max(1, items.length));
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (cursor < items.length) {
+        const index = cursor;
+        cursor += 1;
+        results[index] = await worker(items[index], index);
+      }
+    }),
+  );
+
+  return results;
+}
+
 const LAYER_DRAG_TYPE = 'application/x-playable-layer';
 const ASSET_DRAG_TYPE = 'application/x-playable-asset';
 const layerFieldMap: Record<LayerTarget, Array<keyof LayerSettings>> = {
+  image: ['imageX', 'imageY', 'imageWidth', 'imageHeight', 'imageRotation', 'imageLocked'],
   hand: [
     'layerOrder',
     'handId',
@@ -170,8 +224,24 @@ const layerFieldMap: Record<LayerTarget, Array<keyof LayerSettings>> = {
     'handMotion',
     'injectHand',
   ],
+  text: [
+    'layerOrder',
+    'cueText',
+    'cueX',
+    'cueY',
+    'cueWidth',
+    'cueSize',
+    'cueRotation',
+    'cueLocked',
+    'cueAnimation',
+    'cueColor',
+    'cueBgColor',
+    'cueShadowColor',
+    'showCue',
+  ],
 };
 const lockedLayerFieldMap: Record<LayerTarget, Array<keyof LayerSettings>> = {
+  image: ['imageX', 'imageY', 'imageWidth', 'imageHeight', 'imageRotation'],
   hand: ['handId', 'handMotion', 'handX', 'handY', 'handSize', 'handRotation', 'injectHand'],
   scan: [
     'scanStyle',
@@ -208,18 +278,74 @@ const lockedLayerFieldMap: Record<LayerTarget, Array<keyof LayerSettings>> = {
     'ctaTextColor',
     'ctaShadowColor',
   ],
+  text: [
+    'cueText',
+    'cueX',
+    'cueY',
+    'cueWidth',
+    'cueSize',
+    'cueRotation',
+    'cueAnimation',
+    'cueColor',
+    'cueBgColor',
+    'cueShadowColor',
+    'showCue',
+  ],
 };
 const layerLockFieldMap: Record<LayerTarget, keyof LayerSettings> = {
+  image: 'imageLocked',
   hand: 'handLocked',
   scan: 'scanLocked',
   asset: 'assetLocked',
   cta: 'ctaLocked',
+  text: 'cueLocked',
 };
 const layerMeta: Record<LayerTarget, { label: string; group: string }> = {
-  hand: { label: 'Hand', group: 'Interaction' },
-  scan: { label: 'Scan', group: 'Detection' },
-  asset: { label: 'Asset', group: 'Visual' },
-  cta: { label: 'CTA', group: 'Action' },
+  image: { label: '?nh', group: 'N?n' },
+  hand: { label: 'Tay', group: 'T??ng t?c' },
+  scan: { label: 'Scan', group: 'Nh?n di?n' },
+  asset: { label: 'Hi?u ?ng', group: 'Hi?n th?' },
+  cta: { label: 'CTA', group: 'H?nh ??ng' },
+  text: { label: 'Ch? nh?c', group: 'L?i nh?c' },
+};
+const layerPickerTargets: LayerTarget[] = ['image', 'hand', 'scan', 'cta', 'text'];
+const storeTargetMeta: Record<
+  ProjectSettings['storePlatform'],
+  {
+    label: string;
+    field: 'appStoreUrl' | 'googlePlayUrl' | 'storeUrl';
+    placeholder: string;
+    hint: string;
+  }
+> = {
+  'app-store': {
+    label: 'App Store',
+    field: 'appStoreUrl',
+    placeholder: 'https://apps.apple.com/app/...',
+    hint: 'D?ng khi playable n?y c?n m? App Store.',
+  },
+  'google-play': {
+    label: 'Google Play',
+    field: 'googlePlayUrl',
+    placeholder: 'https://play.google.com/store/apps/details?id=...',
+    hint: 'D?ng khi playable n?y c?n m? Google Play.',
+  },
+  custom: {
+    label: 'URL t?y ch?nh',
+    field: 'storeUrl',
+    placeholder: 'https://example.com/landing',
+    hint: 'D?ng cho landing page ho?c b?t k? ??ch n?o ngo?i store.',
+  },
+};
+const storeRoutingMeta: Record<ProjectSettings['storeRoutingMode'], { label: string; hint: string }> = {
+  single: {
+    label: 'M?t li?n k?t',
+    hint: 'Xu?t m?t ??ch duy nh?t. Ch?n App Store, Google Play ho?c URL t?y ch?nh.',
+  },
+  'platform-auto': {
+    label: 'T? ch?n theo thi?t b?',
+    hint: 'Xu?t c? hai li?n k?t store. iOS m? App Store, Android m? Google Play.',
+  },
 };
 const aiProviderModelMap: Record<ProjectSettings['aiProvider'], string> = {
   openai: 'gpt-image-2',
@@ -227,6 +353,8 @@ const aiProviderModelMap: Record<ProjectSettings['aiProvider'], string> = {
   'gemini-pro': 'gemini/gemini-3-pro-image-preview',
 };
 const scanColorSwatches = ['#7c3cff', '#2563eb', '#22d3ee', '#10b981', '#f59e0b', '#ef4444', '#ffffff'];
+const APPLOVIN_MAX_HTML_BYTES = 5 * 1024 * 1024;
+const ANALYZE_CONCURRENCY = 4;
 
 function setLayerDragData(event: DragEvent<HTMLElement>, layer: LayerTarget, assetId?: string) {
   event.dataTransfer.setData(LAYER_DRAG_TYPE, layer);
@@ -236,7 +364,7 @@ function setLayerDragData(event: DragEvent<HTMLElement>, layer: LayerTarget, ass
 
 function getLayerDragData(event: DragEvent<HTMLElement>): LayerTarget | null {
   const value = event.dataTransfer.getData(LAYER_DRAG_TYPE);
-  return value === 'hand' || value === 'scan' || value === 'asset' || value === 'cta' ? value : null;
+  return value === 'image' || value === 'hand' || value === 'scan' || value === 'asset' || value === 'cta' || value === 'text' ? value : null;
 }
 
 function getAssetDragData(event: DragEvent<HTMLElement>) {
@@ -271,42 +399,43 @@ function mergeLayerSettings(base: Partial<LayerSettings>, partial: Partial<Layer
   };
 }
 
-function getCtaHandPatch(layer: Partial<LayerSettings>) {
-  const merged = mergeLayerSettings(layer);
-  return {
-    handX: Math.round(clamp(merged.ctaX + Math.min(14, Math.max(8, merged.ctaWidth * 0.18)), 8, 92)),
-    handY: Math.round(clamp(merged.ctaY - 1, 12, 92)),
-    handMotion: 'tap' as LayerSettings['handMotion'],
-    injectHand: true,
-  } satisfies Partial<LayerSettings>;
-}
-
 function isLayerLocked(layer: Partial<LayerSettings>, target: LayerTarget) {
+  if (target === 'image') return Boolean(layer.imageLocked);
   if (target === 'hand') return Boolean(layer.handLocked);
   if (target === 'scan') return Boolean(layer.scanLocked);
   if (target === 'asset') return Boolean(layer.assetLocked);
+  if (target === 'text') return Boolean(layer.cueLocked);
   return Boolean(layer.ctaLocked);
 }
 
 function getLayerLockPatch(target: LayerTarget, locked: boolean) {
+  if (target === 'image') return { imageLocked: locked } satisfies Partial<LayerSettings>;
   if (target === 'hand') return { handLocked: locked } satisfies Partial<LayerSettings>;
   if (target === 'scan') return { scanLocked: locked } satisfies Partial<LayerSettings>;
   if (target === 'asset') return { assetLocked: locked } satisfies Partial<LayerSettings>;
+  if (target === 'text') return { cueLocked: locked } satisfies Partial<LayerSettings>;
   return { ctaLocked: locked } satisfies Partial<LayerSettings>;
 }
 
 function getLayerRotationPatch(target: LayerTarget, rotation: number) {
   const next = Math.round(clamp(rotation, -180, 180));
+  if (target === 'image') return { imageRotation: next } satisfies Partial<LayerSettings>;
   if (target === 'hand') return { handRotation: next } satisfies Partial<LayerSettings>;
   if (target === 'scan') return { scanRotation: next } satisfies Partial<LayerSettings>;
   if (target === 'asset') return { assetRotation: next } satisfies Partial<LayerSettings>;
+  if (target === 'text') return { cueRotation: next } satisfies Partial<LayerSettings>;
   return { ctaRotation: next } satisfies Partial<LayerSettings>;
 }
 
 function getLayerSizePatch(target: LayerTarget, size: number) {
+  if (target === 'image') {
+    const next = roundCssNumber(clamp(size, 12, 180));
+    return { imageWidth: next, imageHeight: next } satisfies Partial<LayerSettings>;
+  }
   if (target === 'hand') return { handSize: Math.round(clamp(size, 32, 260)) } satisfies Partial<LayerSettings>;
   if (target === 'scan') return { scanSize: Math.round(clamp(size, 48, 360)) } satisfies Partial<LayerSettings>;
   if (target === 'asset') return { assetSize: Math.round(clamp(size, 48, 280)) } satisfies Partial<LayerSettings>;
+  if (target === 'text') return { cueWidth: Math.round(clamp(size, 28, 96)) } satisfies Partial<LayerSettings>;
   return { ctaWidth: Math.round(clamp(size, 44, 92)) } satisfies Partial<LayerSettings>;
 }
 
@@ -318,7 +447,7 @@ function filterLockedLayerPatch(base: Partial<LayerSettings>, partial: Partial<L
   if (isLayerLocked(base, target) && !hasLayerLockPatch(partial, target)) return {};
 
   const entries = Object.entries(partial).filter(([key]) => {
-    for (const layerTarget of ['hand', 'scan', 'asset', 'cta'] as LayerTarget[]) {
+    for (const layerTarget of ['image', 'hand', 'scan', 'asset', 'cta', 'text'] as LayerTarget[]) {
       if (key === layerLockFieldMap[layerTarget]) return true;
       if (isLayerLocked(base, layerTarget) && lockedLayerFieldMap[layerTarget].includes(key as keyof LayerSettings)) return false;
     }
@@ -329,12 +458,7 @@ function filterLockedLayerPatch(base: Partial<LayerSettings>, partial: Partial<L
 }
 
 function buildCtaCompanionPatch(base: Partial<LayerSettings>, partial: Partial<LayerSettings>) {
-  const next = mergeLayerSettings(base, partial);
-  const handPatch = getCtaHandPatch(next);
-  return {
-    ...partial,
-    ...(next.injectHand ? handPatch : {}),
-  } satisfies Partial<LayerSettings>;
+  return partial;
 }
 
 function buildHandCompanionPatch(base: Partial<LayerSettings>, partial: Partial<LayerSettings>) {
@@ -378,9 +502,11 @@ function setCtaScanGroupPatch(base: Partial<LayerSettings>, grouped: boolean) {
 
 function getRemoveLayerPatch(target: LayerTarget, layerOrder: LayerTarget[]) {
   const base = { layerOrder } satisfies Partial<LayerSettings>;
+  if (target === 'image') return base;
   if (target === 'hand') return { ...base, injectHand: false } satisfies Partial<LayerSettings>;
   if (target === 'scan') return { ...base, injectScan: false, ctaScanGrouped: false } satisfies Partial<LayerSettings>;
   if (target === 'asset') return { ...base, injectAsset: false } satisfies Partial<LayerSettings>;
+  if (target === 'text') return { ...base, showCue: false } satisfies Partial<LayerSettings>;
   return { ...base, showCta: false, ctaScanGrouped: false } satisfies Partial<LayerSettings>;
 }
 
@@ -431,6 +557,16 @@ function getRecipePatchForLayer(layer: Partial<LayerSettings>, target: LayerTarg
       : {};
   }
 
+  if (target === 'text') {
+    const patch = pickLayerFields(layer, ['cueText', 'cueX', 'cueY', 'cueWidth', 'cueSize', 'cueAnimation']);
+    return Object.keys(patch).length
+      ? ({
+          ...patch,
+          showCue: true,
+        } satisfies Partial<LayerSettings>)
+      : {};
+  }
+
   const patch = pickLayerFields(layer, ['assetId', 'assetX', 'assetY', 'assetSize', 'assetSpeed']);
   return Object.keys(patch).length
     ? ({
@@ -440,11 +576,25 @@ function getRecipePatchForLayer(layer: Partial<LayerSettings>, target: LayerTarg
     : {};
 }
 
-export function PlayableStudio() {
+export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const handDataUrlCache = useRef(new Map<string, string>());
+  const cloneImportCheckedRef = useRef(false);
+  const freshProjectHandledRef = useRef(false);
+  const supabase = useMemo(() => getSupabaseBrowser(), []);
+  const searchParams = useSearchParams();
   const [health, setHealth] = useState<HealthState>(null);
-  const [settings, setSettings] = useState<ProjectSettings>(() => createDefaultProjectSettings());
+  const [session, setSession] = useState<Session | null>(null);
+  const [sessionLoading, setSessionLoading] = useState(Boolean(appId));
+  const [authToken, setAuthToken] = useState('');
+  const [studioUser, setStudioUser] = useState<StudioUserSummary | null>(null);
+  const [studioWorkspace, setStudioWorkspace] = useState<StudioWorkspaceSummary | null>(null);
+  const [studioApp, setStudioApp] = useState<StudioAppSummary | null>(null);
+  const [savedProjects, setSavedProjects] = useState<StudioProjectSummary[]>([]);
+  const [savedProjectsLoading, setSavedProjectsLoading] = useState(Boolean(appId));
+  const [deletingProjectId, setDeletingProjectId] = useState('');
+  const [currentProjectId, setCurrentProjectId] = useState('');
+  const [settings, setSettings] = useState<ProjectSettings>(() => normalizeProjectSettings(createDefaultProjectSettings()));
   const [sources, setSources] = useState<SourceItem[]>([]);
   const [activeSourceId, setActiveSourceId] = useState('');
   const [variants, setVariants] = useState<PlayableVariant[]>([]);
@@ -455,10 +605,11 @@ export function PlayableStudio() {
   const [notice, setNotice] = useState<Notice>({ tone: 'warn', text: 'Chưa có ảnh nguồn' });
   const [busy, setBusy] = useState(false);
   const [paused, setPaused] = useState(false);
-  const [aiWorkers, setAiWorkers] = useState<AiWorkerStatus[]>(['idle', 'idle', 'idle', 'idle']);
+  const [aiWorkers, setAiWorkers] = useState<AiWorkerStatus[]>(() => createWorkerStatuses(DEFAULT_VARIANT_COUNT, 'idle'));
   const [lastAiDuration, setLastAiDuration] = useState<number | null>(null);
   const [generationHistory, setGenerationHistory] = useState<GenerationHistoryEntry[]>([]);
   const [assetLibraryTab, setAssetLibraryTab] = useState<AssetLibraryTab>('hand');
+  const [selectedPreviewMetrics, setSelectedPreviewMetrics] = useState<FrameMetrics | null>(null);
 
   useEffect(() => {
     setSettings((current) => (current.imageFit === 'cover' ? current : { ...current, imageFit: 'cover' }));
@@ -474,29 +625,196 @@ export function PlayableStudio() {
   );
   const activeLayer = selectedVariant?.settings || (activeSource?.kind === 'html' ? htmlLayerSettings : defaultLayerSettings);
   const activeImageFit = settings.imageFit || 'cover';
+  const storeConfig = useMemo(
+    () => resolveProjectStoreConfig(settings),
+    [settings.appStoreUrl, settings.googlePlayUrl, settings.storePlatform, settings.storeRoutingMode, settings.storeUrl],
+  );
+  const isPlatformAutoStore = settings.storeRoutingMode === 'platform-auto';
+  const selectedStoreMeta = storeTargetMeta[settings.storePlatform];
+  const selectedStoreValue = settings[selectedStoreMeta.field];
+  const targetVariantCount = normalizeVariantCount(settings.variantCount || DEFAULT_VARIANT_COUNT);
   const activeAiReady =
     settings.aiProvider === 'openai' ? Boolean(health?.openAiConfigured) : Boolean(health?.geminiConfigured);
-  const activeAiLabel = settings.aiProvider === 'openai' ? 'GPT' : 'Gemini';
+  const activeAiStatusMessage = !health
+    ? ''
+    : !health.ok
+      ? health.error || 'Kiểm tra trạng thái AI thất bại. Hãy khởi động lại local để nạp lại .env.local.'
+      : activeAiReady
+        ? ''
+        : 'Thiếu khóa AI ở server (AI_API_KEY hoặc OPENAI_API_KEY). Hãy khởi động lại local sau khi cập nhật .env.local.';
   const visibleVisualAssets = useMemo(
     () =>
       assetLibraryTab === 'hand' || assetLibraryTab === 'button'
         ? []
-        : visualAssets.filter((asset) => asset.category === assetLibraryTab),
+        : visualAssets.filter((asset) => asset.category === 'scan'),
     [assetLibraryTab],
   );
   const assetLibraryCount =
     assetLibraryTab === 'hand' ? handAssets.length : assetLibraryTab === 'button' ? buttonAssets.length : visibleVisualAssets.length;
+  const appScopedEditor = Boolean(appId);
+
+  useEffect(() => {
+    if (!appScopedEditor) {
+      setSessionLoading(false);
+      return;
+    }
+    if (!supabase) {
+      setSessionLoading(false);
+      setNotice({ tone: 'error', text: 'Missing Supabase browser config.' });
+      return;
+    }
+
+    let active = true;
+    supabase.auth.getSession().then(({ data }) => {
+      if (!active) return;
+      setSession(data.session || null);
+      setAuthToken(data.session?.access_token || '');
+      setSessionLoading(false);
+    });
+
+    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      if (!active) return;
+      setSession(nextSession || null);
+      setAuthToken(nextSession?.access_token || '');
+      setSessionLoading(false);
+    });
+
+    return () => {
+      active = false;
+      data.subscription.unsubscribe();
+    };
+  }, [appScopedEditor, supabase]);
+
+  const fetchEditorContext = useCallback(async () => {
+    if (!appScopedEditor || !authToken) return;
+    const response = await fetch('/api/auth/me', {
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+      },
+      cache: 'no-store',
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(typeof payload?.error === 'string' ? payload.error : 'Không tải được ngữ cảnh editor.');
+
+    const dashboard = payload as StudioDashboardPayload;
+    const workspace = dashboard.workspaces.find((item) => item.apps.some((app) => app.id === appId)) || null;
+    const app = workspace?.apps.find((item) => item.id === appId) || null;
+    if (!workspace || !app) throw new Error('Không tìm thấy ứng dụng trong không gian của bạn.');
+
+    setStudioUser(dashboard.user);
+    setStudioWorkspace(workspace);
+    setStudioApp(app);
+  }, [appId, appScopedEditor, authToken]);
+
+  const fetchSavedProjects = useCallback(async () => {
+    if (!appScopedEditor || !authToken) return;
+    setSavedProjectsLoading(true);
+    try {
+      const response = await fetch(`/api/projects?appId=${encodeURIComponent(appId)}`, {
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+        },
+        cache: 'no-store',
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(typeof payload?.error === 'string' ? payload.error : 'Không tải được danh sách project.');
+      setSavedProjects(Array.isArray(payload.projects) ? (payload.projects as StudioProjectSummary[]) : []);
+    } finally {
+      setSavedProjectsLoading(false);
+    }
+  }, [appId, appScopedEditor, authToken]);
+
+  useEffect(() => {
+    if (!appScopedEditor || !authToken) return;
+    fetchEditorContext().catch((error) => {
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Không tải được ngữ cảnh ứng dụng.' });
+    });
+    fetchSavedProjects().catch((error) => {
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Không tải được project.' });
+    });
+  }, [appScopedEditor, authToken, fetchEditorContext, fetchSavedProjects]);
+
+  useEffect(() => {
+    if (!appScopedEditor || !studioApp || currentProjectId || sources.length || variants.length) return;
+    setSettings((current) => ({
+      ...current,
+      name: current.name && current.name !== 'Playable batch' ? current.name : `${studioApp.name} project`,
+    }));
+  }, [appScopedEditor, currentProjectId, sources.length, studioApp, variants.length]);
+
+  useEffect(() => {
+    if (!appScopedEditor || !appId || currentProjectId || sources.length || variants.length || cloneImportCheckedRef.current) return;
+    cloneImportCheckedRef.current = true;
+
+    try {
+      const raw = window.sessionStorage.getItem(`playable-clone-import:${appId}`);
+      if (!raw) return;
+      window.sessionStorage.removeItem(`playable-clone-import:${appId}`);
+
+      const payload = JSON.parse(raw) as StudioCloneImportPayload;
+      if (payload.appId !== appId || !payload.source || !Array.isArray(payload.variants) || !payload.variants.length) {
+        return;
+      }
+
+      const source = {
+        ...payload.source,
+        hotspot: payload.source.hotspot || defaultHotspot(),
+        createdAt: payload.source.createdAt || Date.now(),
+      } satisfies SourceItem;
+
+      setCurrentProjectId('');
+      setSettings(normalizeProjectSettings(payload.settings || createDefaultProjectSettings()));
+      setSources([source]);
+      setActiveSourceId(source.id);
+      setVariants(
+        payload.variants.map((variant, index) => ({
+          ...variant,
+          sourceId: source.id,
+          index: Number(variant.index) || index + 1,
+          hotspot: variant.hotspot || source.hotspot || defaultHotspot(),
+          settings: normalizeLayerSettings(variant.settings),
+        })),
+      );
+      setSelectedVariantId(payload.variants[0]?.id || '');
+      setSelectedLayer('hand');
+      setHtmlLayerSettings(normalizeLayerSettings(defaultLayerSettings));
+      setNotice({ tone: 'ok', text: `Đã nhập ${payload.variants.length} biến thể clone từ Clone Playable.` });
+    } catch (error) {
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Cannot import clone payload.' });
+    }
+  }, [appId, appScopedEditor, currentProjectId, sources.length, variants.length]);
+
+  useEffect(() => {
+    if (busy) return;
+    setAiWorkers((current) => (current.length === targetVariantCount ? current : createWorkerStatuses(targetVariantCount, 'idle')));
+  }, [busy, targetVariantCount]);
+
+  useEffect(() => {
+    if (!selectedVariant) setSelectedPreviewMetrics(null);
+  }, [selectedVariant]);
 
   const refreshHealth = useCallback(() => {
     let cancelled = false;
     setHealth(null);
     fetch('/api/health', { cache: 'no-store' })
-      .then((response) => response.json())
-      .then((payload) => {
-        if (!cancelled) setHealth(payload);
+      .then(async (response) => {
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(
+            typeof payload?.error === 'string' && payload.error.trim() ? payload.error : `Health check failed (${response.status})`,
+          );
+        }
+        if (!cancelled) setHealth(payload as Exclude<HealthState, null>);
       })
-      .catch(() => {
-        if (!cancelled) setHealth({ ok: false, aiConfigured: false, supabaseConfigured: false });
+      .catch((error) => {
+        if (!cancelled) {
+          setHealth({
+            ok: false,
+            aiConfigured: false,
+            supabaseConfigured: false,
+            error: error instanceof Error ? error.message : 'AI health check failed.',
+          });
+        }
       });
 
     return () => {
@@ -536,6 +854,137 @@ export function PlayableStudio() {
   const setProjectSetting = <K extends keyof ProjectSettings>(key: K, value: ProjectSettings[K]) => {
     setSettings((current) => ({ ...current, [key]: value }));
   };
+
+  const resetCurrentProject = useCallback(() => {
+    const baseSettings = normalizeProjectSettings(createDefaultProjectSettings());
+    setCurrentProjectId('');
+    setSettings({
+      ...baseSettings,
+      name: studioApp ? `${studioApp.name} project` : baseSettings.name,
+    });
+    setSources([]);
+    setActiveSourceId('');
+    setVariants([]);
+    setSelectedVariantId('');
+    setSelectedLayer('hand');
+    setNotice({ tone: 'ok', text: 'Đã tạo project mới trong ứng dụng hiện tại.' });
+  }, [studioApp]);
+
+  const deleteSavedProject = useCallback(
+    async (project: StudioProjectSummary) => {
+      if (!authToken) {
+        setNotice({ tone: 'error', text: 'Cần đăng nhập để thao tác.' });
+        return;
+      }
+
+      const confirmed = window.confirm(
+        `Xóa project "${project.name}"${project.variantCount ? ` và ${project.variantCount} biến thể đã lưu` : ''}?`,
+      );
+      if (!confirmed) return;
+
+      setDeletingProjectId(project.id);
+      try {
+        const response = await fetch(`/api/projects/${project.id}`, {
+          method: 'DELETE',
+          headers: {
+            Authorization: `Bearer ${authToken}`,
+          },
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(typeof payload?.error === 'string' ? payload.error : 'Không xóa được project.');
+
+        if (currentProjectId === project.id) {
+          resetCurrentProject();
+        }
+        await fetchSavedProjects();
+        setNotice({ tone: 'ok', text: `Đã xóa project ${project.name}.` });
+      } catch (error) {
+        setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Không xóa được project.' });
+      } finally {
+        setDeletingProjectId('');
+      }
+    },
+    [authToken, currentProjectId, fetchSavedProjects, resetCurrentProject],
+  );
+
+  useEffect(() => {
+    const wantsFreshProject = searchParams?.get('new') === '1';
+    if (!appScopedEditor || !wantsFreshProject || freshProjectHandledRef.current || !studioApp) return;
+
+    freshProjectHandledRef.current = true;
+    resetCurrentProject();
+
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('new');
+      window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+    }
+  }, [appScopedEditor, resetCurrentProject, searchParams, studioApp]);
+
+  const signOutEditor = useCallback(async () => {
+    if (!supabase) return;
+    await supabase.auth.signOut();
+    window.location.href = '/';
+  }, [supabase]);
+
+  const loadSavedProject = useCallback(
+    async (projectId: string) => {
+      if (!authToken) {
+        setNotice({ tone: 'error', text: 'Cần đăng nhập để thao tác.' });
+        return;
+      }
+
+      setBusy(true);
+      setNotice({ tone: 'busy', text: 'Đang mở project từ Supabase' });
+      try {
+        const response = await fetch(`/api/projects/${projectId}`, {
+          headers: {
+            Authorization: `Bearer ${authToken}`,
+          },
+          cache: 'no-store',
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(typeof payload?.error === 'string' ? payload.error : 'Cannot load project.');
+
+        const project = payload.project as StudioProjectDetail;
+        const sourceId = `source-${project.id}`;
+        const sourceItem: SourceItem | null = project.sourceImageDataUrl
+          ? {
+              id: sourceId,
+              name: `${project.name}.png`,
+              kind: 'image',
+              status: 'ready',
+              dataUrl: project.sourceImageDataUrl,
+              width: project.variants[0]?.width || 0,
+              height: project.variants[0]?.height || 0,
+              hotspot: project.variants[0]?.hotspot,
+              createdAt: Date.now(),
+            }
+          : null;
+
+        setCurrentProjectId(project.id);
+        setSettings(normalizeProjectSettings(project.settings || createDefaultProjectSettings()));
+        setSources(sourceItem ? [sourceItem] : []);
+        setActiveSourceId(sourceItem?.id || '');
+        setVariants(
+          project.variants.map((variant, index) => ({
+            ...variant,
+            sourceId,
+            index: Number(variant.index) || index + 1,
+            hotspot: variant.hotspot || { x: 50, y: 72, confidence: 0.28 },
+            settings: normalizeLayerSettings(variant.settings),
+          })),
+        );
+        setSelectedVariantId(project.variants[0]?.id || '');
+        setNotice({ tone: 'ok', text: `Đã mở project ${project.name}` });
+      } catch (error) {
+        setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Không mở được project.' });
+      } finally {
+        setBusy(false);
+      }
+    },
+    [authToken],
+  );
 
   const updateLayer = useCallback(
     (partial: Partial<LayerSettings>, targetVariantId = selectedVariant?.id, layerTarget = selectedLayer) => {
@@ -616,21 +1065,25 @@ export function PlayableStudio() {
       setVariants([]);
       setSelectedVariantId('');
       setHtmlLayerSettings(normalizeLayerSettings(defaultLayerSettings));
-      setAiWorkers(['idle', 'idle', 'idle', 'idle']);
+      setAiWorkers(createWorkerStatuses(targetVariantCount, 'idle'));
       setLastAiDuration(null);
       setProjectSetting('name', safeFileName(imported[0].name));
       setProjectSetting('imageFit', 'cover');
+      const currentPrompt = settings.prompt.trim();
+      if (!currentPrompt || currentPrompt === legacyDefaultProjectPrompt || currentPrompt === defaultProjectPrompt) {
+        setProjectSetting('prompt', defaultProjectPrompt);
+      }
       const firstImage = imported.find((source) => source.kind === 'image' && source.dataUrl);
       if (firstImage) {
         const drafts = await createDraftVariants(firstImage);
         setVariants(drafts);
         setSelectedVariantId(drafts[0]?.id || '');
-        setNotice({ tone: 'ok', text: `${imported.length} file ready, 4 draft preview created` });
+        setNotice({ tone: 'ok', text: `${imported.length} file sẵn sàng, ${drafts.length} bản xem trước nháp đã tạo` });
         return;
       }
       setNotice({ tone: 'ok', text: `${imported.length} file sẵn sàng` });
     } catch (error) {
-      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Import thất bại' });
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Import tháº¥t báº¡i' });
     } finally {
       setBusy(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -645,6 +1098,7 @@ export function PlayableStudio() {
     const dimensions = await getImageDimensions(image.dataUrl);
     const rawHotspot = await detectImageHotspot(image.dataUrl).catch(() => source.hotspot || defaultHotspot());
     const hotspot = projectHotspotToFrame(rawHotspot, dimensions, settings.orientation, activeImageFit);
+    const plan = heuristicPlanFromHotspot(hotspot, index, settings.prompt);
     return {
       id: uid(),
       sourceId: source.id,
@@ -654,14 +1108,15 @@ export function PlayableStudio() {
       width: dimensions.width,
       height: dimensions.height,
       revisedPrompt: image.revisedPrompt || '',
-      hotspot,
-      settings: layerFromHotspot(hotspot, index),
+      hotspot: hotspotFromPlayablePlan(plan),
+      plan,
+      settings: layerFromPlayablePlan(plan, settings.prompt || image.revisedPrompt || ''),
     };
   };
 
   const createDraftVariants = (source: SourceItem) =>
     Promise.all(
-      Array.from({ length: 4 }, (_, index) =>
+      Array.from({ length: targetVariantCount }, (_, index) =>
         createVariantFromImage(
           source,
           {
@@ -669,7 +1124,13 @@ export function PlayableStudio() {
             dataUrl: source.dataUrl || '',
           },
           index + 1,
-        ),
+        ).then((variant) => ({
+          ...variant,
+          settings: normalizeLayerSettings({
+            ...variant.settings,
+            showCta: false,
+          }),
+        })),
       ),
     );
 
@@ -684,7 +1145,7 @@ export function PlayableStudio() {
       const next = await createDraftVariants(activeSource);
       setVariants(next);
       setSelectedVariantId(next[0]?.id || '');
-      setAiWorkers(['idle', 'idle', 'idle', 'idle']);
+      setAiWorkers(createWorkerStatuses(targetVariantCount, 'idle'));
       setLastAiDuration(null);
       setNotice({ tone: 'ok', text: 'Đã tạo 4 bản nháp từ ảnh nguồn' });
     } finally {
@@ -694,14 +1155,14 @@ export function PlayableStudio() {
 
   const generateVariants = async () => {
     if (!activeSource?.dataUrl || activeSource.kind !== 'image') {
-      setNotice({ tone: 'error', text: 'Chon anh nguon truoc' });
+      setNotice({ tone: 'error', text: 'Chọn ảnh nguồn trước' });
       return;
     }
 
     setBusy(true);
-    setNotice({ tone: 'busy', text: 'AI dang chay 4 luong song song, anh nao xong se hien truoc...' });
+    setNotice({ tone: 'busy', text: `AI đang tạo ${targetVariantCount} biến thể, ảnh nào xong sẽ hiện trước...` });
     setLastAiDuration(null);
-    setAiWorkers(['running', 'running', 'running', 'running']);
+    setAiWorkers(createWorkerStatuses(targetVariantCount, 'running'));
     setSources((current) =>
       current.map((source) => (source.id === activeSource.id ? { ...source, status: 'generating', error: '' } : source)),
     );
@@ -713,7 +1174,7 @@ export function PlayableStudio() {
         body: JSON.stringify({
           imageDataUrl: activeSource.dataUrl,
           prompt: settings.prompt,
-          count: 4,
+          count: targetVariantCount,
           provider: settings.aiProvider,
           model: aiProviderModelMap[settings.aiProvider],
           aspectRatio: settings.orientation === 'landscape' ? '16:9' : '9:16',
@@ -734,7 +1195,7 @@ export function PlayableStudio() {
       if (contentType.includes('application/x-ndjson') && response.body) {
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
-        const slots: Array<PlayableVariant | null> = Array.from({ length: 4 }, () => null);
+        const slots: Array<PlayableVariant | null> = Array.from({ length: targetVariantCount }, () => null);
         const streamErrors: string[] = [];
         let buffer = '';
 
@@ -785,17 +1246,18 @@ export function PlayableStudio() {
         }
 
         if (buffer.trim()) await handleLine(buffer);
-        if (!next.length) throw new Error(streamErrors.join('; ') || 'AI khong tra anh variant');
+        if (!next.length) throw new Error(streamErrors.join('; ') || 'AI không trả về ảnh biến thể');
       } else {
         const payload = await response.json().catch(() => ({}));
-        const generated = (payload.variants || []).slice(0, 4) as AiVariantResponseItem[];
-        if (!generated.length) throw new Error('AI khong tra anh variant');
+        const generated = (payload.variants || []).slice(0, targetVariantCount) as AiVariantResponseItem[];
+        if (!generated.length) throw new Error('AI không trả về ảnh biến thể');
         durationSeconds = typeof payload.durationMs === 'number' ? Math.max(1, Math.round(payload.durationMs / 1000)) : null;
         warningCount = Array.isArray(payload.errors) ? payload.errors.length : 0;
-        setAiWorkers(Array.from({ length: 4 }, (_, index) => (index < generated.length ? 'done' : 'error')));
+        setAiWorkers(Array.from({ length: targetVariantCount }, (_, index) => (index < generated.length ? 'done' : 'error')));
         next = await Promise.all(generated.map((item, index) => createVariantFromImage(activeSource, item, index + 1)));
       }
 
+      next = await autoPlanVariants(next).catch(() => next);
       setLastAiDuration(durationSeconds);
       setVariants(next);
       setSelectedVariantId(next[0]?.id || '');
@@ -805,11 +1267,11 @@ export function PlayableStudio() {
       rememberGeneration(next, durationSeconds);
       setNotice({
         tone: warningCount ? 'warn' : 'ok',
-        text: `${next.length} variant da tao${durationSeconds ? ` trong ${durationSeconds}s` : ''}${warningCount ? `, loi ${warningCount}` : ''}`,
+        text: `${next.length} biến thể đã tạo${durationSeconds ? ` trong ${durationSeconds}s` : ''}${warningCount ? `, lỗi ${warningCount}` : ''}`,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'AI generation failed';
-      setAiWorkers(['error', 'error', 'error', 'error']);
+      setAiWorkers(createWorkerStatuses(targetVariantCount, 'error'));
       setSources((current) =>
         current.map((source) =>
           source.id === activeSource.id ? { ...source, status: 'error', error: message } : source,
@@ -820,50 +1282,81 @@ export function PlayableStudio() {
       setBusy(false);
     }
   };
+  const autoPlanVariants = (items: PlayableVariant[]) =>
+    mapWithConcurrency(items, ANALYZE_CONCURRENCY, async (variant) => {
+      const rawHotspot = await detectImageHotspot(variant.dataUrl);
+      const hotspot = projectHotspotToFrame(rawHotspot, variant, settings.orientation, activeImageFit);
+      const plan = await analyzeVariantPlan(variant, hotspot, items.length || targetVariantCount);
+      return {
+        ...variant,
+        hotspot: hotspotFromPlayablePlan(plan),
+        plan,
+        settings: layerFromPlayablePlan(plan, settings.prompt || variant.revisedPrompt || ''),
+      };
+    });
+
   const detectAllVariants = async () => {
     if (!variants.length) return;
     setBusy(true);
-    setNotice({ tone: 'busy', text: 'Đang scan điểm animation' });
+    setNotice({ tone: 'busy', text: settings.useAiAnalyze ? 'Đang dùng AI Analyze để lên animation plan' : 'Đang auto-plan local, không tốn quota AI' });
 
     try {
-      const next = await Promise.all(
-        variants.map(async (variant) => {
-          const rawHotspot = await detectImageHotspot(variant.dataUrl);
-          const hotspot = projectHotspotToFrame(rawHotspot, variant, settings.orientation, activeImageFit);
-          const suggestedLayer = layerFromHotspot(hotspot, variant.index);
-          return {
-            ...variant,
-            hotspot,
-            settings: {
-              ...variant.settings,
-              ...suggestedLayer,
-              ctaText: variant.settings.ctaText,
-            },
-          };
-        }),
-      );
+      const next = await autoPlanVariants(variants);
       setVariants(next);
-      setNotice({ tone: 'ok', text: 'Đã cập nhật hotspot cho 4 preview' });
+      setNotice({ tone: 'ok', text: `Đã auto-plan ${next.length} bản xem trước${settings.useAiAnalyze ? ' bằng AI Analyze' : ' bằng local heuristic'}` });
     } catch (error) {
-      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Detect thất bại' });
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Detect tháº¥t báº¡i' });
     } finally {
       setBusy(false);
+    }
+  };
+
+  const analyzeVariantPlan = async (variant: PlayableVariant, hotspot: Hotspot, count = variants.length || targetVariantCount) => {
+    if (!settings.useAiAnalyze || !activeAiReady) {
+      return heuristicPlanFromHotspot(hotspot, variant.index, settings.prompt || variant.revisedPrompt || '');
+    }
+
+    try {
+      const response = await fetch('/api/ai/analyze-playable', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+        body: JSON.stringify({
+          imageDataUrl: variant.dataUrl,
+          prompt: settings.prompt || variant.revisedPrompt || '',
+          index: variant.index,
+          count,
+          hotspot,
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.plan) throw new Error(payload.error || `Analyze failed (${response.status})`);
+      return payload.plan as NonNullable<PlayableVariant['plan']>;
+    } catch {
+      return heuristicPlanFromHotspot(hotspot, variant.index, settings.prompt || variant.revisedPrompt || '');
     }
   };
 
   const exportVariantHtml = async (variant: PlayableVariant, network: NetworkTarget = settings.network) => {
     const layer = normalizeLayerSettings(variant.settings);
     const handDataUrl = layer.injectHand ? await getHandDataUrl(layer.handId) : undefined;
-    const image: ExportImageInput = {
+    let image: ExportImageInput = {
       name: variant.name,
       dataUrl: variant.dataUrl,
       width: variant.width,
       height: variant.height,
     };
+
+    if (network === 'applovin') {
+      image = await optimizeImageForAppLovin(image, settings.orientation);
+    }
+
     return generateImagePlayableHtml({
       image,
       layer,
-      storeUrl: settings.storeUrl,
+      store: storeConfig,
       network,
       useClickTag: settings.useClickTag,
       handDataUrl,
@@ -884,15 +1377,18 @@ export function PlayableStudio() {
   const exportSelected = async () => {
     if (selectedVariant) {
       setBusy(true);
-      setNotice({ tone: 'busy', text: 'Dang xuat 5 nen tang cho variant' });
+      setNotice({ tone: 'busy', text: 'Đang đóng gói 5 HTML network cho biến thể đang chọn' });
       try {
         const JSZip = (await import('jszip')).default;
         const zip = new JSZip();
-        await addVariantNetworkFiles(zip, selectedVariant);
+        const safeName = safeFileName(selectedVariant.name);
+        for (const network of networkExportTargets) {
+          const html = await exportVariantHtml(selectedVariant, network);
+          zip.file(`${safeName}_${network}.html`, html);
+        }
         const blob = await zip.generateAsync({ type: 'blob' });
-        downloadBlob(`${safeFileName(selectedVariant.name)}_5_networks.zip`, blob, 'application/zip');
-        setNotice({ tone: 'ok', text: 'Đã xuất variant đang chọn' });
-        setNotice({ tone: 'ok', text: 'Da xuat 5 nen tang cho variant dang chon' });
+        downloadBlob(`${safeName}_5_networks.zip`, blob, 'application/zip');
+        setNotice({ tone: 'ok', text: `Đã xuất 5 network cho ${selectedVariant.name}` });
       } finally {
         setBusy(false);
       }
@@ -902,20 +1398,28 @@ export function PlayableStudio() {
     if (activeSource?.kind === 'html' && activeSource.html) {
       setBusy(true);
       try {
+        setNotice({ tone: 'busy', text: 'Đang đóng gói 5 HTML network cho playable HTML' });
+        const JSZip = (await import('jszip')).default;
+        const zip = new JSZip();
         const layer = normalizeLayerSettings(activeLayer);
         const handDataUrl = layer.injectHand ? await getHandDataUrl(layer.handId) : undefined;
-        const html = patchPlayableHtml({
-          html: activeSource.html,
-          layer,
-          storeUrl: settings.storeUrl,
-          network: settings.network,
-          useClickTag: settings.useClickTag,
-          replaceLinks: settings.replaceLinks,
-          ctaSelector: settings.ctaSelector,
-          handDataUrl,
-        });
-        downloadBlob(`${safeFileName(activeSource.name)}_patched.html`, html, 'text/html;charset=utf-8');
-        setNotice({ tone: 'ok', text: 'Đã xuất HTML patched' });
+        const safeName = safeFileName(activeSource.name);
+        for (const network of networkExportTargets) {
+          const html = patchPlayableHtml({
+            html: activeSource.html,
+            layer,
+            store: storeConfig,
+            network,
+            useClickTag: settings.useClickTag,
+            replaceLinks: settings.replaceLinks,
+            ctaSelector: settings.ctaSelector,
+            handDataUrl,
+          });
+          zip.file(`${safeName}_${network}.html`, html);
+        }
+        const blob = await zip.generateAsync({ type: 'blob' });
+        downloadBlob(`${safeName}_5_networks.zip`, blob, 'application/zip');
+        setNotice({ tone: 'ok', text: `Đã xuất 5 network cho ${activeSource.name}` });
       } finally {
         setBusy(false);
       }
@@ -924,7 +1428,7 @@ export function PlayableStudio() {
 
   const exportZip = async () => {
     if (!variants.length) {
-      setNotice({ tone: 'error', text: 'Chưa có 4 variant để export' });
+      setNotice({ tone: 'error', text: 'Chưa có biến thể để xuất' });
       return;
     }
 
@@ -938,16 +1442,20 @@ export function PlayableStudio() {
         await addVariantNetworkFiles(zip, variant);
       }
       const blob = await zip.generateAsync({ type: 'blob' });
-      downloadBlob(`${safeFileName(settings.name)}_4_playables_5_networks.zip`, blob, 'application/zip');
-      setNotice({ tone: 'ok', text: 'Đã export ZIP 4 playable' });
+      downloadBlob(`${safeFileName(settings.name)}_${variants.length}_playables_5_networks.zip`, blob, 'application/zip');
+      setNotice({ tone: 'ok', text: `Đã xuất ZIP ${variants.length} playable` });
     } catch (error) {
-      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Export ZIP thất bại' });
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Export ZIP tháº¥t báº¡i' });
     } finally {
       setBusy(false);
     }
   };
 
   const saveProject = async () => {
+    if (appScopedEditor && (!authToken || !appId)) {
+      setNotice({ tone: 'error', text: 'Bạn chưa đăng nhập hoặc chưa chọn app.' });
+      return;
+    }
     if (!activeSource || !variants.length) {
       setNotice({ tone: 'error', text: 'Cần ảnh nguồn và variant trước khi lưu' });
       return;
@@ -961,6 +1469,8 @@ export function PlayableStudio() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          id: currentProjectId || undefined,
+          appId: appId || undefined,
           name: settings.name,
           prompt: settings.prompt,
           settings,
@@ -970,9 +1480,11 @@ export function PlayableStudio() {
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.error || 'Supabase save failed');
+      if (typeof payload.id === 'string') setCurrentProjectId(payload.id);
+      if (appScopedEditor) await fetchSavedProjects();
       setNotice({ tone: 'ok', text: `Đã lưu project ${payload.id}` });
     } catch (error) {
-      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Lưu thất bại' });
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'LÆ°u tháº¥t báº¡i' });
     } finally {
       setBusy(false);
     }
@@ -1015,7 +1527,7 @@ export function PlayableStudio() {
     return patchPlayableHtml({
       html: activeSource.html,
       layer,
-      storeUrl: settings.storeUrl,
+      store: storeConfig,
       network: settings.network,
       useClickTag: settings.useClickTag,
       replaceLinks: settings.replaceLinks,
@@ -1031,7 +1543,7 @@ export function PlayableStudio() {
     settings.ctaSelector,
     settings.network,
     settings.replaceLinks,
-    settings.storeUrl,
+    storeConfig,
     settings.useClickTag,
   ]);
 
@@ -1063,8 +1575,8 @@ export function PlayableStudio() {
     setSelectedVariantId(restored[0]?.id || '');
     setSelectedLayer('hand');
     setLastAiDuration(entry.durationSeconds);
-    setAiWorkers(Array.from({ length: 4 }, (_, index) => (index < restored.length ? 'done' : 'idle')));
-    setNotice({ tone: 'ok', text: `Restored ${restored.length} variants from history` });
+    setAiWorkers(Array.from({ length: Math.max(restored.length, targetVariantCount) }, (_, index) => (index < restored.length ? 'done' : 'idle')));
+    setNotice({ tone: 'ok', text: `?? kh?i ph?c ${restored.length} bi?n th? t? l?ch s?` });
   };
 
   const applyRecipe = (recipeId: string) => {
@@ -1072,7 +1584,7 @@ export function PlayableStudio() {
     if (!recipe) return;
     const patch = getRecipePatchForLayer(recipe.layer, selectedLayer);
     if (!Object.keys(patch).length) {
-      setNotice({ tone: 'warn', text: `${recipe.label} does not target ${layerMeta[selectedLayer].label}` });
+      setNotice({ tone: 'warn', text: `${recipe.label} không áp dụng cho ${layerMeta[selectedLayer].label}` });
       return;
     }
 
@@ -1081,7 +1593,7 @@ export function PlayableStudio() {
     else if (selectedLayer === 'hand') updateLayer(buildHandCompanionPatch(layerForControls, patch), undefined, 'hand');
     else updateLayer(patch, undefined, selectedLayer);
 
-    setNotice({ tone: 'ok', text: `${recipe.label} applied to ${layerMeta[selectedLayer].label}` });
+    setNotice({ tone: 'ok', text: `${recipe.label} đã áp dụng cho ${layerMeta[selectedLayer].label}` });
   };
 
   const applyVisualAsset = (assetId: string) => {
@@ -1099,7 +1611,7 @@ export function PlayableStudio() {
         undefined,
         'scan',
       );
-      setNotice({ tone: 'ok', text: 'Frame Scan applied' });
+      setNotice({ tone: 'ok', text: 'Đã áp dụng Frame Scan' });
       return;
     }
 
@@ -1132,7 +1644,7 @@ export function PlayableStudio() {
       undefined,
       'cta',
     );
-    setNotice({ tone: 'ok', text: `${asset.label} button applied` });
+    setNotice({ tone: 'ok', text: `${asset.label} đã áp dụng nút` });
   };
 
   const removeSource = (sourceId: string) => {
@@ -1156,7 +1668,7 @@ export function PlayableStudio() {
     setSelectedLayer(nextSelectedLayer);
     setNotice({
       tone: 'ok',
-      text: selectedVariant ? `Removed ${layerMeta[removedLayer].label} from Variant ${selectedVariant.index}` : `Removed ${layerMeta[removedLayer].label} from HTML`,
+      text: selectedVariant ? `Đã xóa ${layerMeta[removedLayer].label} khỏi biến thể ${selectedVariant.index}` : `Đã xóa ${layerMeta[removedLayer].label} khỏi HTML`,
     });
   };
 
@@ -1170,19 +1682,35 @@ export function PlayableStudio() {
 
     setVariants(next);
     setSelectedVariantId(nextSelected?.id || '');
-    setNotice({ tone: 'ok', text: `Deleted Variant ${selectedVariant.index}` });
+    setNotice({ tone: 'ok', text: `Đã xóa biến thể ${selectedVariant.index}` });
   };
 
   const layerForControls = normalizeLayerSettings(activeLayer);
+  const imageFrameForControls = getImageFrameLayout(
+    layerForControls,
+    selectedVariant?.width || activeSource?.width,
+    selectedVariant?.height || activeSource?.height,
+    settings.orientation,
+    activeImageFit,
+  );
   const selectedLayerLocked = isLayerLocked(layerForControls, selectedLayer);
-  const canEditSelectedLayer = Boolean((selectedVariant || activeSource?.kind === 'html') && getLayerOrder(layerForControls).includes(selectedLayer));
-  const canRemoveSelectedLayer = canEditSelectedLayer && !selectedLayerLocked;
+  const canEditSelectedLayer = selectedLayer === 'image'
+    ? Boolean(selectedVariant)
+    : Boolean((selectedVariant || activeSource?.kind === 'html') && getLayerOrder(layerForControls).includes(selectedLayer));
+  const canRemoveSelectedLayer = selectedLayer !== 'image' && canEditSelectedLayer && !selectedLayerLocked;
+  const visibleLayerCount = Array.from(new Set<LayerTarget>(['image', ...getLayerOrder(layerForControls)])).filter((target) => isLayerVisible(layerForControls, target)).length;
+  const selectedLayerMeta = layerMeta[selectedLayer];
+  const selectedLayerVisible = isLayerVisible(layerForControls, selectedLayer);
+  const layerStackSummary = selectedVariant ? `V${selectedVariant.index} · ${visibleLayerCount}` : activeSource?.kind === 'html' ? `HTML · ${visibleLayerCount}` : 'Chưa có biến thể';
 
   const moveLayer = useCallback(
     (variantId: string, layer: LayerTarget, x: number, y: number, assetId?: string) => {
       const currentLayer = normalizeLayerSettings(variants.find((variant) => variant.id === variantId)?.settings || defaultLayerSettings);
       setSelectedVariantId(variantId);
       setSelectedLayer(layer);
+      if (layer === 'image') {
+        updateLayer({ imageX: x, imageY: y }, variantId, 'image');
+      }
       if (layer === 'hand') {
         updateLayer(
           buildHandCompanionPatch(currentLayer, { handX: x, handY: y, injectHand: true, layerOrder: ensureLayerInOrder(getLayerOrder(currentLayer), 'hand') }),
@@ -1209,6 +1737,13 @@ export function PlayableStudio() {
           buildCtaCompanionPatch(currentLayer, { ctaX: x, ctaY: y, showCta: true, layerOrder: ensureLayerInOrder(getLayerOrder(currentLayer), 'cta') }),
           variantId,
           'cta',
+        );
+      }
+      if (layer === 'text') {
+        updateLayer(
+          { cueX: x, cueY: y, showCue: true, layerOrder: ensureLayerInOrder(getLayerOrder(currentLayer), 'text') },
+          variantId,
+          'text',
         );
       }
     },
@@ -1239,6 +1774,7 @@ export function PlayableStudio() {
 
   const setLayerVisibility = (layer: LayerTarget, visible: boolean) => {
     setSelectedLayer(layer);
+    if (layer === 'image') return;
     const nextOrder = visible ? ensureLayerInOrder(getLayerOrder(layerForControls), layer) : getLayerOrder(layerForControls);
     if (layer === 'hand') updateLayer({ injectHand: visible, layerOrder: nextOrder }, undefined, 'hand');
     if (layer === 'scan') {
@@ -1255,9 +1791,11 @@ export function PlayableStudio() {
     }
     if (layer === 'asset') updateLayer({ injectAsset: visible, layerOrder: nextOrder }, undefined, 'asset');
     if (layer === 'cta') updateLayer({ showCta: visible, layerOrder: nextOrder }, undefined, 'cta');
+    if (layer === 'text') updateLayer({ showCue: visible, layerOrder: nextOrder }, undefined, 'text');
   };
 
   const moveLayerOrder = (layer: LayerTarget, direction: 'up' | 'down') => {
+    if (layer === 'image') return;
     const order = getLayerOrder(layerForControls);
     const index = order.indexOf(layer);
     const swapIndex = direction === 'up' ? index + 1 : index - 1;
@@ -1285,9 +1823,105 @@ export function PlayableStudio() {
     updateLayer(buildHandCompanionPatch(layerForControls, partial), undefined, 'hand');
   };
 
+  const updateTextControls = (partial: Partial<LayerSettings>) => {
+    updateLayer(partial, undefined, 'text');
+  };
+
+  const updateImageControls = (partial: Partial<LayerSettings>) => {
+    updateLayer(partial, undefined, 'image');
+  };
+
   const setCtaScanGrouped = (grouped: boolean) => {
     updateLayer(setCtaScanGroupPatch(layerForControls, grouped), undefined, selectedLayer === 'scan' ? 'scan' : 'cta');
   };
+
+  const canAlignSelectedLayer =
+    canEditSelectedLayer && Boolean(selectedPreviewMetrics) && !(selectedLayer === 'scan' && shouldAnchorScanToFinger(layerForControls));
+
+  const alignSelectedLayer = (command: 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom') => {
+    if (!canAlignSelectedLayer || !selectedPreviewMetrics) return;
+
+    const box = getLayerSelectionMetrics(layerForControls, selectedLayer, selectedPreviewMetrics, imageFrameForControls);
+    if (!box) return;
+
+    const horizontal =
+      command === 'left' ? box.widthPercent / 2 : command === 'center' ? 50 : command === 'right' ? 100 - box.widthPercent / 2 : null;
+    const vertical =
+      command === 'top' ? box.heightPercent / 2 : command === 'middle' ? 50 : command === 'bottom' ? 100 - box.heightPercent / 2 : null;
+
+    const nextX = horizontal === null ? null : roundCssNumber(clamp(horizontal, 0, 100));
+    const nextY = vertical === null ? null : roundCssNumber(clamp(vertical, 0, 100));
+
+    if (selectedLayer === 'image') {
+      updateImageControls({
+        ...(nextX === null ? {} : { imageX: nextX }),
+        ...(nextY === null ? {} : { imageY: nextY }),
+      });
+      return;
+    }
+
+    if (selectedLayer === 'hand') {
+      updateHandControls({
+        ...(nextX === null ? {} : { handX: nextX }),
+        ...(nextY === null ? {} : { handY: nextY }),
+      });
+      return;
+    }
+
+    if (selectedLayer === 'scan') {
+      updateScanControls({
+        ...(nextX === null ? {} : { scanX: nextX }),
+        ...(nextY === null ? {} : { scanY: nextY }),
+      });
+      return;
+    }
+
+    if (selectedLayer === 'asset') {
+      updateLayer(
+        {
+          ...(nextX === null ? {} : { assetX: nextX }),
+          ...(nextY === null ? {} : { assetY: nextY }),
+        },
+        undefined,
+        'asset',
+      );
+      return;
+    }
+
+    if (selectedLayer === 'text') {
+      updateTextControls({
+        ...(nextX === null ? {} : { cueX: nextX }),
+        ...(nextY === null ? {} : { cueY: nextY }),
+      });
+      return;
+    }
+
+    updateCtaControls({
+      ...(nextX === null ? {} : { ctaX: nextX }),
+      ...(nextY === null ? {} : { ctaY: nextY }),
+    });
+  };
+
+  if (appScopedEditor && sessionLoading) {
+    return (
+      <main className="dashboard-state">
+        <Loader2 className="spin" size={18} />
+        <span>Đang kiểm tra đăng nhập editor...</span>
+      </main>
+    );
+  }
+
+  if (appScopedEditor && !session) {
+    return (
+      <main className="dashboard-state">
+        <AlertCircle size={18} />
+        <span>Editor này yêu cầu đăng nhập Supabase.</span>
+        <Link href="/" className="secondary-button">
+          Quay láº¡i dashboard
+        </Link>
+      </main>
+    );
+  }
 
   return (
     <main className="studio-shell">
@@ -1298,18 +1932,95 @@ export function PlayableStudio() {
           </div>
           <div>
             <strong>Playable Studio</strong>
-            <span>Batch AI editor</span>
+            <span>Trình chỉnh sửa AI theo lô</span>
           </div>
         </div>
 
-        <div className="status-strip">
-          <StatusPill icon={<WandSparkles size={14} />} label={activeAiLabel} ready={activeAiReady} loading={!health} />
-          <StatusPill icon={<Database size={14} />} label="DB" ready={Boolean(health?.supabaseConfigured)} loading={!health} />
-        </div>
+        {appScopedEditor ? (
+          <section className="sidebar-section workspace-scope-section">
+            <div className="section-head">
+              <span>Tính năng</span>
+              <b>3</b>
+            </div>
+            <div className="sidebar-feature-menu">
+              <Link href="/" className="sidebar-feature-item">
+                <span className="sidebar-feature-icon">
+                  <Grid2X2 size={16} />
+                </span>
+                <span className="sidebar-feature-copy">
+                  <strong>Tổng quan</strong>
+                  <small>Màn hình chính cho toàn bộ ứng dụng</small>
+                </span>
+              </Link>
+              <Link href={`/apps/${appId}`} className="sidebar-feature-item active">
+                <span className="sidebar-feature-icon">
+                  <WandSparkles size={16} />
+                </span>
+                <span className="sidebar-feature-copy">
+                  <strong>Tr?nh ch?nh s?a</strong>
+                  <small>Trình chỉnh sửa chính của ứng dụng này</small>
+                </span>
+              </Link>
+              <Link href={`/apps/${appId}/clone`} className="sidebar-feature-item">
+                <span className="sidebar-feature-icon">
+                  <FileCode2 size={16} />
+                </span>
+                <span className="sidebar-feature-copy">
+                  <strong>T?i t?o playable</strong>
+                  <small>Dựng lại từ playable HTML nguồn</small>
+                </span>
+              </Link>
+            </div>
+            <button className="secondary-button wide" type="button" onClick={resetCurrentProject}>
+              <RefreshCw size={15} />
+              Project mới
+            </button>
+            <div className="workspace-scope-card">
+              <div>
+                <strong>{studioApp?.name || 'Đang tải ứng dụng...'}</strong>
+                <small>{studioWorkspace ? `${studioWorkspace.name} · ${studioWorkspace.memberRole}` : 'Đang tải không gian'}</small>
+              </div>
+            </div>
+            <div className="project-list">
+              {savedProjectsLoading ? (
+                <div className="empty-note">Đang tải project...</div>
+              ) : savedProjects.length ? (
+                savedProjects.map((project) => (
+                  <div key={project.id} className={`project-row ${project.id === currentProjectId ? 'active' : ''}`}>
+                    <button type="button" className="project-row-main" onClick={() => loadSavedProject(project.id)}>
+                      <span className="source-icon">
+                        <Save size={15} />
+                      </span>
+                      <span className="source-meta">
+                        <strong>{project.name}</strong>
+                        <small>
+                          {project.variantCount} biến thể · {project.ownerEmail || 'chưa rõ email'}
+                        </small>
+                      </span>
+                    </button>
+                    {studioUser && (studioUser.role === 'manager' || studioWorkspace?.memberRole === 'manager' || project.ownerUserId === studioUser.id) ? (
+                      <button
+                        className="ghost-button slim project-row-delete"
+                        type="button"
+                        onClick={() => void deleteSavedProject(project)}
+                        disabled={deletingProjectId === project.id}
+                        title="Xóa project"
+                      >
+                        {deletingProjectId === project.id ? <Loader2 className="spin" size={14} /> : <Trash2 size={14} />}
+                      </button>
+                    ) : null}
+                  </div>
+                ))
+              ) : (
+                <div className="empty-note">Ứng dụng này chưa có project nào.</div>
+              )}
+            </div>
+          </section>
+        ) : null}
 
         <button className="upload-zone" type="button" onClick={() => fileInputRef.current?.click()}>
           <Upload size={22} />
-          <strong>Import</strong>
+          <strong>Nhập</strong>
           <span>PNG, JPG, WEBP, HTML</span>
         </button>
         <input
@@ -1323,7 +2034,7 @@ export function PlayableStudio() {
 
         <section className="sidebar-section">
           <div className="section-head">
-            <span>Queue</span>
+            <span>Hàng chờ</span>
             <b>{sources.length}</b>
           </div>
           <div className="source-list">
@@ -1371,7 +2082,7 @@ export function PlayableStudio() {
 
         <section className="sidebar-section">
           <div className="section-head">
-            <span>Gen history</span>
+            <span>Lịch sử tạo</span>
             <b>{generationHistory.length}</b>
           </div>
           <div className="history-list">
@@ -1384,25 +2095,25 @@ export function PlayableStudio() {
                   <span className="source-meta">
                     <strong>{entry.name}</strong>
                     <small>
-                      {entry.variants.length} variants · {entry.provider === 'openai' ? 'GPT' : 'Gemini'}
-                      {entry.durationSeconds ? ` · ${entry.durationSeconds}s` : ''}
+                      {entry.variants.length} biến thể · {entry.provider === 'openai' ? 'GPT' : 'Gemini'}
+                      {entry.durationSeconds ? ` · ${entry.durationSeconds}s` : ``}
                     </small>
                   </span>
                 </button>
               ))
             ) : (
-              <p className="empty-note">Generated batches will appear here.</p>
+              <p className="empty-note">Các batch đã tạo sẽ xuất hiện tại đây.</p>
             )}
           </div>
         </section>
 
         <section className="sidebar-section asset-library-section">
           <div className="section-head">
-            <span>Asset library</span>
+            <span>Thư viện asset</span>
             <b>{assetLibraryCount}</b>
           </div>
-          <div className="asset-tabs" role="tablist" aria-label="Asset library">
-            {(['hand', 'button', 'scan', 'heart', 'counter'] as AssetLibraryTab[]).map((tab) => (
+          <div className="asset-tabs" role="tablist" aria-label="Thư viện asset">
+            {(['hand', 'button', 'scan'] as AssetLibraryTab[]).map((tab) => (
               <button
                 key={tab}
                 type="button"
@@ -1413,12 +2124,8 @@ export function PlayableStudio() {
                   <Hand size={14} />
                 ) : tab === 'button' ? (
                   <MousePointerClick size={14} />
-                ) : tab === 'scan' ? (
-                  <ScanLine size={14} />
-                ) : tab === 'heart' ? (
-                  <HeartPulse size={14} />
                 ) : (
-                  <Hash size={14} />
+                  <ScanLine size={14} />
                 )}
                 <span>{tab}</span>
               </button>
@@ -1516,52 +2223,100 @@ export function PlayableStudio() {
       <section className="workspace">
         <header className="workspace-top">
           <div>
-            <span className="eyebrow">Workspace</span>
-            <h1>{settings.name || 'Playable batch'}</h1>
+            <span className="eyebrow">{appScopedEditor ? studioWorkspace?.name || 'Không gian' : 'Không gian'}</span>
+            <h1>{settings.name || 'Lô playable'}</h1>
+            {appScopedEditor ? <p className='workspace-context-note'>{studioApp?.name || 'Editor ứng dụng'} · Trình chỉnh sửa project</p> : null}
           </div>
-          <div className="toolbar">
-            <button className="ghost-button" type="button" onClick={cloneSourceToVariants} disabled={!activeSource || busy}>
-              <Grid2X2 size={16} />
-              Draft x4
-            </button>
-            <div className="fit-toggle" role="group" aria-label="Image fit mode">
-              <button
-                className={activeImageFit === 'cover' ? 'active' : ''}
-                type="button"
-                onClick={() => setProjectSetting('imageFit', 'cover')}
-                title="Fill 9:16 without distortion"
-              >
-                <Maximize2 size={14} />
-                Fill
+          <div className="workspace-top-side">
+            {appScopedEditor ? (
+              <div className="workspace-account-bar">
+                <div className="workspace-account-copy">
+                  <strong>{studioUser?.displayName || studioUser?.email || 'Đã đăng nhập'}</strong>
+                  <span>
+                    {studioUser?.email || 'Chưa có email'}
+                    {studioWorkspace?.memberRole ? ` · ${studioWorkspace.memberRole}` : ''}
+                  </span>
+                </div>
+                <button className="ghost-button slim workspace-signout-button" type="button" onClick={signOutEditor}>
+                  Đăng xuất
+                </button>
+              </div>
+            ) : null}
+            <div className="toolbar">
+              <label className="batch-count-control" title={`1-${MAX_VARIANT_COUNT} variants`}>
+                <span>L?</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={MAX_VARIANT_COUNT}
+                  value={targetVariantCount}
+                  onChange={(event) => setProjectSetting('variantCount', normalizeVariantCount(event.target.value))}
+                />
+              </label>
+              <button className="ghost-button" type="button" onClick={cloneSourceToVariants} disabled={!activeSource || busy}>
+                <Grid2X2 size={16} />
+                Nháp x{targetVariantCount}
               </button>
-              <button
-                className={activeImageFit === 'contain' ? 'active' : ''}
-                type="button"
-                onClick={() => setProjectSetting('imageFit', 'contain')}
-                title="Fit full image without cropping"
-              >
-                <Minimize2 size={14} />
-                Fit
+              <div className="fit-toggle" role="group" aria-label="Ch? ?? khung ?nh">
+                <button
+                  className={activeImageFit === 'cover' ? 'active' : ''}
+                  type="button"
+                  onClick={() => setProjectSetting('imageFit', 'cover')}
+                  title="Phủ đầy khung 9:16 mà không méo ảnh"
+                >
+                  <Maximize2 size={14} />
+                  Fill
+                </button>
+                <button
+                  className={activeImageFit === 'contain' ? 'active' : ''}
+                  type="button"
+                  onClick={() => setProjectSetting('imageFit', 'contain')}
+                  title="Hiện trọn ảnh mà không cắt"
+                >
+                  <Minimize2 size={14} />
+                  Fit
+                </button>
+              </div>
+              <div className="align-toolbar" role="group" aria-label={`C?n ${selectedLayerMeta.label}`}>
+                <span className="align-toolbar-label">{selectedLayerMeta.label}</span>
+                <button type="button" onClick={() => alignSelectedLayer('left')} disabled={!canAlignSelectedLayer} title="C?n tr?i">
+                  L
+                </button>
+                <button type="button" onClick={() => alignSelectedLayer('center')} disabled={!canAlignSelectedLayer} title="C?n gi?a ngang">
+                  C
+                </button>
+                <button type="button" onClick={() => alignSelectedLayer('right')} disabled={!canAlignSelectedLayer} title="C?n ph?i">
+                  R
+                </button>
+                <button type="button" onClick={() => alignSelectedLayer('top')} disabled={!canAlignSelectedLayer} title="C?n tr?n">
+                  T
+                </button>
+                <button type="button" onClick={() => alignSelectedLayer('middle')} disabled={!canAlignSelectedLayer} title="C?n gi?a d?c">
+                  M
+                </button>
+                <button type="button" onClick={() => alignSelectedLayer('bottom')} disabled={!canAlignSelectedLayer} title="C?n d??i">
+                  B
+                </button>
+              </div>
+              <button className="secondary-button" type="button" onClick={detectAllVariants} disabled={!variants.length || busy}>
+                <Crosshair size={16} />
+                Tự lên plan
+              </button>
+              <button className="primary-button" type="button" onClick={generateVariants} disabled={!activeSource || activeSource.kind !== 'image' || busy || !activeAiReady}>
+                {busy ? <Loader2 className="spin" size={16} /> : <WandSparkles size={16} />}
+                T?o {targetVariantCount}
               </button>
             </div>
-            <button className="secondary-button" type="button" onClick={detectAllVariants} disabled={!variants.length || busy}>
-              <Crosshair size={16} />
-              Detect
-            </button>
-            <button className="primary-button" type="button" onClick={generateVariants} disabled={!activeSource || activeSource.kind !== 'image' || busy || !activeAiReady}>
-              {busy ? <Loader2 className="spin" size={16} /> : <WandSparkles size={16} />}
-              Generate 4
-            </button>
           </div>
         </header>
 
         <div className="notice-row">
           <NoticeView notice={notice} />
           <div className="playback-controls">
-            <button className="icon-button" type="button" onClick={() => setPaused((value) => !value)} title={paused ? 'Play' : 'Pause'}>
+            <button className="icon-button" type="button" onClick={() => setPaused((value) => !value)} title={paused ? 'Ch?y' : 'T?m d?ng'}>
               {paused ? <Play size={16} /> : <Eye size={16} />}
             </button>
-            <button className="icon-button" type="button" onClick={refreshHealth} title="Refresh status">
+            <button className="icon-button" type="button" onClick={refreshHealth} title="L?m m?i tr?ng th?i">
               <RefreshCw size={16} />
             </button>
           </div>
@@ -1569,7 +2324,7 @@ export function PlayableStudio() {
 
         <section className={`preview-grid orientation-${settings.orientation} ${paused ? 'is-paused' : ''}`}>
           {variants.length ? (
-            variants.slice(0, 4).map((variant) => (
+            variants.map((variant) => (
               <PreviewCard
                 key={variant.id}
                 variant={variant}
@@ -1581,6 +2336,7 @@ export function PlayableStudio() {
                 onLayerSelect={setSelectedLayer}
                 onLayerDrop={(layer, x, y, assetId) => moveLayer(variant.id, layer, x, y, assetId)}
                 onLayerPatch={(layer, partial) => patchPreviewLayer(variant.id, layer, partial)}
+                onFrameMetricsChange={variant.id === selectedVariant?.id ? setSelectedPreviewMetrics : undefined}
               />
             ))
           ) : (
@@ -1591,6 +2347,16 @@ export function PlayableStudio() {
         <section className="layer-dock-panel">
           <div className="layer-dock-head">
             <div className="tab-group">
+              <button
+                className={selectedLayer === 'image' ? 'active' : ''}
+                type="button"
+                draggable
+                onDragStart={(event) => setLayerDragData(event, 'image')}
+                onClick={() => setSelectedLayer('image')}
+              >
+                <ImagePlus size={15} />
+                Image
+              </button>
               <button
                 className={selectedLayer === 'hand' ? 'active' : ''}
                 type="button"
@@ -1612,16 +2378,6 @@ export function PlayableStudio() {
                 Scan
               </button>
               <button
-                className={selectedLayer === 'asset' ? 'active' : ''}
-                type="button"
-                draggable
-                onDragStart={(event) => setLayerDragData(event, 'asset')}
-                onClick={() => setSelectedLayer('asset')}
-              >
-                <Activity size={15} />
-                Asset
-              </button>
-              <button
                 className={selectedLayer === 'cta' ? 'active' : ''}
                 type="button"
                 draggable
@@ -1631,15 +2387,25 @@ export function PlayableStudio() {
                 <MousePointerClick size={15} />
                 CTA
               </button>
+              <button
+                className={selectedLayer === 'text' ? 'active' : ''}
+                type="button"
+                draggable
+                onDragStart={(event) => setLayerDragData(event, 'text')}
+                onClick={() => setSelectedLayer('text')}
+              >
+                <Hash size={15} />
+                Text
+              </button>
             </div>
             <button
               className={`group-toggle ${layerForControls.ctaScanGrouped ? 'active' : ''}`}
               type="button"
               onClick={() => setCtaScanGrouped(!layerForControls.ctaScanGrouped)}
-              title={layerForControls.ctaScanGrouped ? 'Ungroup scan from CTA' : 'Group scan with CTA'}
+              title={layerForControls.ctaScanGrouped ? 'Tách scan khỏi CTA' : 'Gộp scan với CTA'}
             >
               {layerForControls.ctaScanGrouped ? <Link2 size={14} /> : <Unlink2 size={14} />}
-              {layerForControls.ctaScanGrouped ? 'Grouped' : 'Ungrouped'}
+              {layerForControls.ctaScanGrouped ? 'Đã gộp' : 'Tách rời'}
             </button>
             <div className="worker-strip">
               {aiWorkers.map((status, index) => (
@@ -1657,37 +2423,112 @@ export function PlayableStudio() {
       <aside className="inspector">
         <div className="inspector-head">
           <div>
-            <span className="eyebrow">Inspector</span>
-            <h2>{selectedVariant ? `Variant ${selectedVariant.index}` : activeSource?.kind === 'html' ? 'HTML patch' : 'Settings'}</h2>
+            <span className="eyebrow">Bảng điều khiển</span>
+            <h2>{selectedVariant ? `Bi?n th? ${selectedVariant.index}` : activeSource?.kind === 'html' ? 'Bản vá HTML' : 'Cài đặt'}</h2>
           </div>
           <Settings2 size={18} />
         </div>
 
         <section className="panel-section">
           <label className="field">
-            <span>Project name</span>
+            <span>Tên project</span>
             <input value={settings.name} onChange={(event) => setProjectSetting('name', event.target.value)} />
           </label>
           <label className="field">
             <span>Prompt</span>
             <textarea rows={5} value={settings.prompt} onChange={(event) => setProjectSetting('prompt', event.target.value)} />
           </label>
+          <div className="section-title compact">
+            <div className="section-title-copy">
+              <h3>Liên kết store</h3>
+              <p className="section-note">Xuất một đích đến hoặc tự điều hướng theo thiết bị.</p>
+            </div>
+            <span>{storeRoutingMeta[settings.storeRoutingMode].label}</span>
+          </div>
+          <div className="store-routing-grid">
+            {(['single', 'platform-auto'] as ProjectSettings['storeRoutingMode'][]).map((mode) => (
+              <button
+                key={mode}
+                className={`store-target-chip ${settings.storeRoutingMode === mode ? 'active' : ''}`}
+                type="button"
+                onClick={() => setProjectSetting('storeRoutingMode', mode)}
+              >
+                {storeRoutingMeta[mode].label}
+              </button>
+            ))}
+          </div>
+          {!isPlatformAutoStore ? (
+            <>
+              <div className="store-target-grid">
+                {(['app-store', 'google-play', 'custom'] as ProjectSettings['storePlatform'][]).map((target) => (
+                  <button
+                    key={target}
+                    className={`store-target-chip ${settings.storePlatform === target ? 'active' : ''}`}
+                    type="button"
+                    onClick={() => setProjectSetting('storePlatform', target)}
+                  >
+                    {storeTargetMeta[target].label}
+                  </button>
+                ))}
+              </div>
+              <label className="field">
+                <span>{selectedStoreMeta.label} URL</span>
+                <input
+                  value={selectedStoreValue}
+                  placeholder={selectedStoreMeta.placeholder}
+                  onChange={(event) => setProjectSetting(selectedStoreMeta.field, event.target.value)}
+                />
+                <small className={`field-help ${selectedStoreValue ? '' : 'warn'}`}>
+                  {selectedStoreValue ? selectedStoreMeta.hint : 'Điền liên kết này trước khi xuất để thao tác chạm mở đúng trang store.'}
+                </small>
+              </label>
+            </>
+          ) : (
+            <div className="field">
+              <span>Liên kết theo nền tảng</span>
+              <div className="field-grid">
+                <label className="field">
+                  <span>App Store URL</span>
+                  <input
+                    value={settings.appStoreUrl}
+                    placeholder={storeTargetMeta['app-store'].placeholder}
+                    onChange={(event) => setProjectSetting('appStoreUrl', event.target.value)}
+                  />
+                </label>
+                <label className="field">
+                  <span>Google Play URL</span>
+                  <input
+                    value={settings.googlePlayUrl}
+                    placeholder={storeTargetMeta['google-play'].placeholder}
+                    onChange={(event) => setProjectSetting('googlePlayUrl', event.target.value)}
+                  />
+                </label>
+              </div>
+              <small className={`field-help ${settings.appStoreUrl || settings.googlePlayUrl ? '' : 'warn'}`}>
+                {settings.appStoreUrl || settings.googlePlayUrl
+                  ? 'Runtime sẽ mở App Store trên iOS và Google Play trên Android. Nếu một ô trống, hệ thống sẽ dùng liên kết store còn lại.'
+                  : 'Điền cả App Store và Google Play nếu bạn muốn file xuất tự tách theo thiết bị.'}
+              </small>
+            </div>
+          )}
+          <div className="section-title compact">
+            <div className="section-title-copy">
+              <h3>Đầu ra</h3>
+              <p className="section-note">Thiết lập network xem trước, tỷ lệ và nhà cung cấp AI cho batch hiện tại.</p>
+            </div>
+          </div>
           <label className="field">
-            <span>Store URL</span>
-            <input value={settings.storeUrl} onChange={(event) => setProjectSetting('storeUrl', event.target.value)} />
-          </label>
-          <label className="field">
-            <span>AI model</span>
+            <span>Mô hình AI</span>
             <select value={settings.aiProvider} onChange={(event) => setProjectSetting('aiProvider', event.target.value as ProjectSettings['aiProvider'])}>
               <option value="gemini-flash">Gemini 3.1 Flash Image</option>
               <option value="gemini-pro">Gemini 3 Pro Image</option>
               <option value="openai">GPT Image</option>
             </select>
           </label>
-          {!activeAiReady && health && <div className="field-status warn">Missing AI_API_KEY</div>}
+          {activeAiStatusMessage && <div className="field-status warn">{activeAiStatusMessage}</div>}
           <div className="field-grid">
             <label className="field">
-              <span>Network</span>
+              <span>Network xem trước</span>
               <select value={settings.network} onChange={(event) => setProjectSetting('network', event.target.value as ProjectSettings['network'])}>
                 {networkExportTargets.map((network) => (
                   <option key={network} value={network}>
@@ -1697,12 +2538,18 @@ export function PlayableStudio() {
               </select>
             </label>
             <label className="field">
-              <span>Mode</span>
+              <span>Tỷ lệ</span>
               <select value={settings.orientation} onChange={(event) => setProjectSetting('orientation', event.target.value as ProjectSettings['orientation'])}>
                 <option value="portrait">9:16</option>
                 <option value="landscape">16:9</option>
               </select>
             </label>
+          </div>
+          <div className="section-title compact">
+            <div className="section-title-copy">
+              <h3>Thiết lập batch</h3>
+              <p className="section-note">Đồng bộ layer, lập plan AI và xử lý click cho toàn bộ biến thể đã tạo.</p>
+            </div>
           </div>
           <label className="check-row">
             <input
@@ -1710,18 +2557,29 @@ export function PlayableStudio() {
               checked={settings.syncAllVariants}
               onChange={(event) => setProjectSetting('syncAllVariants', event.target.checked)}
             />
-            <span>Apply selected layer to all 4</span>
+            <span>Đồng bộ layer đang chọn sang mọi biến thể đang hiển thị</span>
+          </label>
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={settings.useAiAnalyze}
+              onChange={(event) => setProjectSetting('useAiAnalyze', event.target.checked)}
+            />
+            <span>AI Analyze for Tự lên plan</span>
           </label>
           <label className="check-row">
             <input type="checkbox" checked={settings.useClickTag} onChange={(event) => setProjectSetting('useClickTag', event.target.checked)} />
-            <span>clickTag fallback</span>
+            <span>Tương thích clickTag</span>
           </label>
         </section>
 
         <section className="panel-section">
           <div className="section-title">
-            <h3>Layer Stack</h3>
-            <span>{selectedVariant ? `V${selectedVariant.index}` : activeSource?.kind === 'html' ? 'HTML' : 'none'}</span>
+            <div className="section-title-copy">
+              <h3>Thứ tự layer</h3>
+              <p className="section-note">Thứ tự render từ trên xuống dưới của biến thể đang chọn.</p>
+            </div>
+            <span>{layerStackSummary}</span>
           </div>
           <LayerStack
             layer={layerForControls}
@@ -1733,21 +2591,28 @@ export function PlayableStudio() {
           />
           <button className="secondary-button wide layer-remove-button" type="button" onClick={removeSelectedLayer} disabled={!canRemoveSelectedLayer}>
             <Trash2 size={15} />
-            Remove Layer
+            Xóa layer
           </button>
         </section>
 
         <section className="panel-section">
           <div className="section-title">
-            <h3>Layer Control</h3>
-            <span>{selectedLayer}</span>
+            <div className="section-title-copy">
+              <h3>Chỉnh layer</h3>
+              <p className="section-note">Chọn layer, sau đó kéo trực tiếp trên preview hoặc tinh chỉnh các giá trị bên dưới.</p>
+            </div>
+            <span>{selectedLayerMeta.label}</span>
+          </div>
+          <div className="layer-status-row">
+            <span className={`layer-status-chip ${selectedLayerVisible ? 'ok' : ''}`}>{selectedLayerVisible ? 'Hiện' : 'Ẩn'}</span>
+            <span className={`layer-status-chip ${selectedLayerLocked ? 'warn' : ''}`}>{selectedLayerLocked ? 'Khóa' : 'Sửa được'}</span>
           </div>
           {selectedVariant && (
             <div className="analysis-card">
-              <span>AI placement</span>
-              <strong>{Math.round(selectedVariant.hotspot.confidence * 100)}% confidence</strong>
+              <span>{selectedVariant.plan ? `${selectedVariant.plan.source.toUpperCase()} auto-plan` : 'AI đặt vị trí'}</span>
+              <strong>{Math.round(selectedVariant.hotspot.confidence * 100)}% tin cậy</strong>
               <small>
-                X {Math.round(selectedVariant.hotspot.x)} / Y {Math.round(selectedVariant.hotspot.y)} - {layerForControls.handMotion} +{' '}
+                {selectedVariant.plan ? `${playableIntentLabels[selectedVariant.plan.intent]} / ${selectedVariant.plan.recipeId}` : `X ${Math.round(selectedVariant.hotspot.x)} / Y ${Math.round(selectedVariant.hotspot.y)}`} - {layerForControls.handMotion} +{' '}
                 {layerForControls.scanStyle} + {layerForControls.buttonAnimation}
               </small>
             </div>
@@ -1758,51 +2623,53 @@ export function PlayableStudio() {
             onClick={() => setLayerLock(selectedLayer, !selectedLayerLocked)}
           >
             {selectedLayerLocked ? <Lock size={15} /> : <Unlock size={15} />}
-            {selectedLayerLocked ? 'Locked' : 'Unlocked'}
+            {selectedLayerLocked ? 'Khóa' : 'Mở khóa'}
           </button>
-          <div className="segmented-row">
-            <button
-              className={selectedLayer === 'hand' ? 'active' : ''}
-              type="button"
-              draggable
-              onDragStart={(event) => setLayerDragData(event, 'hand')}
-              onClick={() => setSelectedLayer('hand')}
-            >
-              <Hand size={15} />
-            </button>
-            <button
-              className={selectedLayer === 'scan' ? 'active' : ''}
-              type="button"
-              draggable
-              onDragStart={(event) => setLayerDragData(event, 'scan')}
-              onClick={() => setSelectedLayer('scan')}
-            >
-              <ScanLine size={15} />
-            </button>
-            <button
-              className={selectedLayer === 'asset' ? 'active' : ''}
-              type="button"
-              draggable
-              onDragStart={(event) => setLayerDragData(event, 'asset')}
-              onClick={() => setSelectedLayer('asset')}
-            >
-              <Activity size={15} />
-            </button>
-            <button
-              className={selectedLayer === 'cta' ? 'active' : ''}
-              type="button"
-              draggable
-              onDragStart={(event) => setLayerDragData(event, 'cta')}
-              onClick={() => setSelectedLayer('cta')}
-            >
-              <MousePointerClick size={15} />
-            </button>
+          <div className="layer-target-grid">
+            {layerPickerTargets.map((target) => (
+              <button
+                key={target}
+                className={`layer-target-button ${selectedLayer === target ? 'active' : ''}`}
+                type="button"
+                draggable
+                onDragStart={(event) => setLayerDragData(event, target)}
+                onClick={() => setSelectedLayer(target)}
+              >
+                {layerIcon(target)}
+                <span>{layerMeta[target].label}</span>
+              </button>
+            ))}
           </div>
+
+          {selectedLayer === 'image' && (
+            <fieldset className="control-stack" disabled={selectedLayerLocked || !selectedVariant}>
+              <NumberControl label="X" value={layerForControls.imageX} min={0} max={100} onChange={(value) => updateImageControls({ imageX: value })} />
+              <NumberControl label="Y" value={layerForControls.imageY} min={0} max={100} onChange={(value) => updateImageControls({ imageY: value })} />
+              <NumberControl label="Width" value={imageFrameForControls.widthPercent} min={12} max={180} step={0.5} onChange={(value) => updateImageControls({ imageWidth: value })} />
+              <NumberControl label="Height" value={imageFrameForControls.heightPercent} min={12} max={180} step={0.5} onChange={(value) => updateImageControls({ imageHeight: value })} />
+              <NumberControl label="Rotate" value={layerForControls.imageRotation} min={-180} max={180} onChange={(value) => updateImageControls(getLayerRotationPatch('image', value))} />
+              <button
+                className="secondary-button wide"
+                type="button"
+                onClick={() =>
+                  updateImageControls({
+                    imageX: 50,
+                    imageY: 50,
+                    imageWidth: 0,
+                    imageHeight: 0,
+                    imageRotation: 0,
+                  })
+                }
+              >
+                Đặt lại khung tự động
+              </button>
+            </fieldset>
+          )}
 
           {selectedLayer === 'hand' && (
             <fieldset className="control-stack" disabled={selectedLayerLocked}>
               <label className="field">
-                <span>Motion</span>
+                <span>Chuyển động</span>
                 <select value={layerForControls.handMotion} onChange={(event) => updateHandControls({ handMotion: event.target.value as LayerSettings['handMotion'] })}>
                   {handMotionPresets.map((preset) => (
                     <option key={preset.id} value={preset.id}>
@@ -1817,7 +2684,7 @@ export function PlayableStudio() {
               <NumberControl label="Rotate" value={layerForControls.handRotation} min={-180} max={180} onChange={(value) => updateHandControls(getLayerRotationPatch('hand', value))} />
               <label className="check-row">
                 <input type="checkbox" checked={layerForControls.injectHand} onChange={(event) => updateHandControls({ injectHand: event.target.checked })} />
-                <span>Hand visible</span>
+                <span>Hiện tay</span>
               </label>
             </fieldset>
           )}
@@ -1825,7 +2692,7 @@ export function PlayableStudio() {
           {selectedLayer === 'scan' && (
             <fieldset className="control-stack" disabled={selectedLayerLocked}>
               <label className="field">
-                <span>Scan style</span>
+                <span>Kiểu scan</span>
                 <select value={layerForControls.scanStyle} onChange={(event) => updateScanControls({ scanStyle: event.target.value as LayerSettings['scanStyle'] })}>
                   {scanPresets.map((preset) => (
                     <option key={preset.id} value={preset.id}>
@@ -1836,15 +2703,15 @@ export function PlayableStudio() {
               </label>
               <div className="animation-parameter-card">
                 <div className="section-title compact">
-                  <h3>Animation Parameters</h3>
+                  <h3>Thông số animation</h3>
                   <span>{layerForControls.scanAnimationName || 'Frame Scan'}</span>
                 </div>
                 <label className="field">
-                  <span>Name</span>
+                  <span>Tên</span>
                   <input value={layerForControls.scanAnimationName} onChange={(event) => updateScanControls({ scanAnimationName: event.target.value })} />
                 </label>
                 <label className="field color-field">
-                  <span>Scan color</span>
+                  <span>Màu scan</span>
                   <span className="color-control">
                     <input
                       type="color"
@@ -1854,7 +2721,7 @@ export function PlayableStudio() {
                     <code>{normalizeHexColor(layerForControls.scanColor)}</code>
                   </span>
                 </label>
-                <div className="scan-color-swatches" aria-label="Scan color swatches">
+                <div className="scan-color-swatches" aria-label="Màu scan swatches">
                   {scanColorSwatches.map((color) => (
                     <button
                       key={color}
@@ -1868,31 +2735,31 @@ export function PlayableStudio() {
                 </div>
                 <div className="field-grid">
                   <label className="field">
-                    <span>Loop Times</span>
+                    <span>Kiểu lặp</span>
                     <select value={layerForControls.scanLoop} onChange={(event) => updateScanControls({ scanLoop: event.target.value as LayerSettings['scanLoop'] })}>
-                      <option value="once">Play 1 time</option>
-                      <option value="loop">One-way cycle</option>
-                      <option value="pingpong">Two-way loop</option>
+                      <option value="once">Chạy 1 lần</option>
+                      <option value="loop">Lặp một chiều</option>
+                      <option value="pingpong">Lặp hai chiều</option>
                     </select>
                   </label>
                   <label className="check-row animation-check">
-                    <input type="checkbox" checked={layerForControls.scanAutoplay} onChange={(event) => updateScanControls({ scanAutoplay: event.target.checked })} />
-                    <span>Autoplay</span>
+                    <input type='checkbox' checked={layerForControls.scanAutoplay} onChange={(event) => updateScanControls({ scanAutoplay: event.target.checked })} />
+                    <span>Tự chạy</span>
                   </label>
                 </div>
-                <NumberControl label="Delay" value={layerForControls.scanDelay} min={0} max={3000} step={100} onChange={(value) => updateScanControls({ scanDelay: value })} />
-                <NumberControl label="Duration" value={layerForControls.scanSpeed} min={400} max={5000} step={100} onChange={(value) => updateScanControls({ scanSpeed: value })} />
-                <div className="parameter-subtitle">Scale</div>
+                <NumberControl label='Độ trễ' value={layerForControls.scanDelay} min={0} max={3000} step={100} onChange={(value) => updateScanControls({ scanDelay: value })} />
+                <NumberControl label="Thời lượng" value={layerForControls.scanSpeed} min={400} max={5000} step={100} onChange={(value) => updateScanControls({ scanSpeed: value })} />
+                <div className="parameter-subtitle">Tỷ lệ</div>
                 <NumberControl label="Start" value={layerForControls.scanScaleStart} min={0.2} max={2} step={0.05} onChange={(value) => updateScanControls({ scanScaleStart: value })} />
                 <NumberControl label="End" value={layerForControls.scanScaleEnd} min={0.2} max={3} step={0.05} onChange={(value) => updateScanControls({ scanScaleEnd: value })} />
-                <div className="parameter-subtitle">Opacity</div>
+                <div className="parameter-subtitle">Độ mờ</div>
                 <NumberControl label="Start" value={layerForControls.scanOpacityStart} min={0} max={100} onChange={(value) => updateScanControls({ scanOpacityStart: value })} />
                 <NumberControl label="End" value={layerForControls.scanOpacityEnd} min={0} max={100} onChange={(value) => updateScanControls({ scanOpacityEnd: value })} />
-                <div className="parameter-subtitle">Square Scan Position</div>
+                <div className="parameter-subtitle">Vị trí khung scan</div>
                 {layerForControls.ctaScanGrouped ? (
                   <>
-                    <NumberControl label="Off X" value={layerForControls.scanOffsetX} min={-220} max={220} onChange={(value) => updateScanControls({ scanOffsetX: value })} />
-                    <NumberControl label="Off Y" value={layerForControls.scanOffsetY} min={-220} max={220} onChange={(value) => updateScanControls({ scanOffsetY: value })} />
+                    <NumberControl label="Lệch X" value={layerForControls.scanOffsetX} min={-220} max={220} onChange={(value) => updateScanControls({ scanOffsetX: value })} />
+                    <NumberControl label="Lệch Y" value={layerForControls.scanOffsetY} min={-220} max={220} onChange={(value) => updateScanControls({ scanOffsetY: value })} />
                   </>
                 ) : (
                   <>
@@ -1905,7 +2772,7 @@ export function PlayableStudio() {
               </div>
               <label className="check-row">
                 <input type="checkbox" checked={layerForControls.ctaScanGrouped} onChange={(event) => setCtaScanGrouped(event.target.checked)} />
-                <span>Group with CTA</span>
+                <span>Gộp với CTA</span>
               </label>
               <label className="check-row">
                 <input
@@ -1917,7 +2784,7 @@ export function PlayableStudio() {
                       : updateLayer({ injectScan: false, ctaScanGrouped: false }, undefined, 'scan')
                   }
                 />
-                <span>Scan visible</span>
+                <span>Hiện scan</span>
               </label>
             </fieldset>
           )}
@@ -1925,7 +2792,7 @@ export function PlayableStudio() {
           {selectedLayer === 'asset' && (
             <fieldset className="control-stack" disabled={selectedLayerLocked}>
               <label className="field">
-                <span>Asset type</span>
+                <span>Loại asset</span>
                 <select value={layerForControls.assetId} onChange={(event) => updateLayer({ assetId: event.target.value, injectAsset: true })}>
                   {visualAssets.map((asset) => (
                     <option key={asset.id} value={asset.id}>
@@ -1941,7 +2808,7 @@ export function PlayableStudio() {
               <NumberControl label="Speed" value={layerForControls.assetSpeed} min={500} max={5000} step={100} onChange={(value) => updateLayer({ assetSpeed: value })} />
               <label className="check-row">
                 <input type="checkbox" checked={layerForControls.injectAsset} onChange={(event) => updateLayer({ injectAsset: event.target.checked })} />
-                <span>Asset visible</span>
+                <span>Hiện asset</span>
               </label>
             </fieldset>
           )}
@@ -1949,11 +2816,11 @@ export function PlayableStudio() {
           {selectedLayer === 'cta' && (
             <fieldset className="control-stack" disabled={selectedLayerLocked}>
               <label className="field">
-                <span>Text</span>
+                <span>Chữ</span>
                 <input value={layerForControls.ctaText} onChange={(event) => updateCtaControls({ ctaText: event.target.value })} />
               </label>
               <label className="field">
-                <span>Button animation</span>
+                <span>Hiệu ứng nút</span>
                 <select
                   value={layerForControls.buttonAnimation}
                   onChange={(event) => updateCtaControls({ buttonAnimation: event.target.value as LayerSettings['buttonAnimation'] })}
@@ -1967,7 +2834,7 @@ export function PlayableStudio() {
               </label>
               <div className="field-grid">
                 <label className="field color-field">
-                  <span>Top color</span>
+                  <span>Màu trên</span>
                   <span className="color-control">
                     <input
                       type="color"
@@ -1978,7 +2845,7 @@ export function PlayableStudio() {
                   </span>
                 </label>
                 <label className="field color-field">
-                  <span>Bottom color</span>
+                  <span>Màu dưới</span>
                   <span className="color-control">
                     <input
                       type="color"
@@ -1991,7 +2858,7 @@ export function PlayableStudio() {
               </div>
               <div className="field-grid">
                 <label className="field color-field">
-                  <span>Text color</span>
+                  <span>Màu chữ</span>
                   <span className="color-control">
                     <input
                       type="color"
@@ -2002,7 +2869,7 @@ export function PlayableStudio() {
                   </span>
                 </label>
                 <label className="field color-field">
-                  <span>Shadow</span>
+                  <span>Bóng</span>
                   <span className="color-control">
                     <input
                       type="color"
@@ -2019,11 +2886,77 @@ export function PlayableStudio() {
               <NumberControl label="Rotate" value={layerForControls.ctaRotation} min={-180} max={180} onChange={(value) => updateCtaControls(getLayerRotationPatch('cta', value))} />
               <label className="check-row">
                 <input type="checkbox" checked={layerForControls.ctaScanGrouped} onChange={(event) => setCtaScanGrouped(event.target.checked)} />
-                <span>Group scan with CTA</span>
+                <span>Gộp scan với CTA</span>
               </label>
               <label className="check-row">
                 <input type="checkbox" checked={layerForControls.showCta} onChange={(event) => updateCtaControls({ showCta: event.target.checked })} />
-                <span>CTA visible</span>
+                <span>Hiện CTA</span>
+              </label>
+            </fieldset>
+          )}
+
+          {selectedLayer === 'text' && (
+            <fieldset className="control-stack" disabled={selectedLayerLocked}>
+              <label className="field">
+                <span>Chữ nhắc</span>
+                <input value={layerForControls.cueText} onChange={(event) => updateTextControls({ cueText: event.target.value })} />
+              </label>
+              <label className="field">
+                <span>Hiệu ứng chữ</span>
+                <select
+                  value={layerForControls.cueAnimation}
+                  onChange={(event) => updateTextControls({ cueAnimation: event.target.value as LayerSettings['cueAnimation'] })}
+                >
+                  {textCuePresets.map((preset) => (
+                    <option key={preset.id} value={preset.id}>
+                      {preset.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="field-grid">
+                <label className="field color-field">
+                  <span>Màu chữ</span>
+                  <span className="color-control">
+                    <input
+                      type="color"
+                      value={normalizeHexColor(layerForControls.cueColor, '#ffffff')}
+                      onChange={(event) => updateTextControls({ cueColor: event.target.value })}
+                    />
+                    <code>{normalizeHexColor(layerForControls.cueColor, '#ffffff')}</code>
+                  </span>
+                </label>
+                <label className="field color-field">
+                  <span>Nền</span>
+                  <span className="color-control">
+                    <input
+                      type="color"
+                      value={normalizeHexColor(layerForControls.cueBgColor, '#111827')}
+                      onChange={(event) => updateTextControls({ cueBgColor: event.target.value })}
+                    />
+                    <code>{normalizeHexColor(layerForControls.cueBgColor, '#111827')}</code>
+                  </span>
+                </label>
+              </div>
+              <label className="field color-field">
+                <span>Bóng</span>
+                <span className="color-control">
+                  <input
+                    type="color"
+                    value={normalizeHexColor(layerForControls.cueShadowColor, '#000000')}
+                    onChange={(event) => updateTextControls({ cueShadowColor: event.target.value })}
+                  />
+                  <code>{normalizeHexColor(layerForControls.cueShadowColor, '#000000')}</code>
+                </span>
+              </label>
+              <NumberControl label="X" value={layerForControls.cueX} min={0} max={100} onChange={(value) => updateTextControls({ cueX: value })} />
+              <NumberControl label="Y" value={layerForControls.cueY} min={0} max={100} onChange={(value) => updateTextControls({ cueY: value })} />
+              <NumberControl label="Width" value={layerForControls.cueWidth} min={28} max={96} onChange={(value) => updateTextControls({ cueWidth: value })} />
+              <NumberControl label="Size" value={layerForControls.cueSize} min={12} max={42} onChange={(value) => updateTextControls({ cueSize: value })} />
+              <NumberControl label="Rotate" value={layerForControls.cueRotation} min={-180} max={180} onChange={(value) => updateTextControls(getLayerRotationPatch('text', value))} />
+              <label className="check-row">
+                <input type="checkbox" checked={layerForControls.showCue} onChange={(event) => updateTextControls({ showCue: event.target.checked })} />
+                <span>Hiện chữ nhắc</span>
               </label>
             </fieldset>
           )}
@@ -2031,24 +2964,24 @@ export function PlayableStudio() {
           <div className="layer-actions">
             <button className="danger-button wide" type="button" onClick={deleteSelectedVariant} disabled={!selectedVariant}>
               <Trash2 size={16} />
-              Delete Variant
+              Xóa biến thể
             </button>
           </div>
         </section>
 
         <section className="panel-section">
           <div className="section-title">
-            <h3>Actions</h3>
-            <span>{activeSource?.kind === 'html' && !selectedVariant ? networkLabels[settings.network] : `${variants.length}/4`}</span>
+            <h3>Thao tác</h3>
+            <span>{selectedVariant || activeSource?.kind === 'html' ? '5 network' : `${variants.length * networkExportTargets.length}`}</span>
           </div>
           <div className="action-grid">
             <button className="secondary-button wide" type="button" onClick={exportSelected} disabled={busy || (!selectedVariant && !activeSource?.html)}>
               <Download size={16} />
-              {activeSource?.kind === 'html' && !selectedVariant ? 'Export HTML' : 'Export x5'}
+              Xuất 5 HTML
             </button>
             <button className="secondary-button wide" type="button" onClick={exportZip} disabled={busy || !variants.length}>
               <Archive size={16} />
-              ZIP x20
+              {`ZIP x${variants.length * networkExportTargets.length}`}
             </button>
             <button className="primary-button wide" type="button" onClick={saveProject} disabled={busy || !variants.length}>
               <Save size={16} />
@@ -2078,13 +3011,15 @@ function LayerStack({
 }) {
   const stackOrder = getLayerOrder(layer);
   const topToBottom = [...stackOrder].reverse();
+  const rows = [...topToBottom, 'image' as LayerTarget];
 
   return (
     <div className="layer-stack">
-      {topToBottom.map((target, displayIndex) => {
+      {rows.map((target, displayIndex) => {
         const sourceIndex = stackOrder.indexOf(target);
         const visible = isLayerVisible(layer, target);
         const locked = isLayerLocked(layer, target);
+        const isImage = target === 'image';
         return (
           <div key={target} className={`layer-row ${selectedLayer === target ? 'active' : ''}`}>
             <button className="layer-select" type="button" onClick={() => onSelect(target)}>
@@ -2094,21 +3029,21 @@ function LayerStack({
                 <small>{layerMeta[target].group}</small>
               </span>
             </button>
-            <button className="layer-mini" type="button" onClick={() => onVisibleChange(target, !visible)} title={visible ? 'Hide' : 'Show'}>
+            <button className="layer-mini" type="button" onClick={() => onVisibleChange(target, !visible)} title={visible ? 'Ẩn' : 'Hiện'} disabled={isImage}>
               {visible ? <Eye size={14} /> : <EyeOff size={14} />}
             </button>
-            <button className={`layer-mini ${locked ? 'locked' : ''}`} type="button" onClick={() => onLockChange(target, !locked)} title={locked ? 'Unlock' : 'Lock'}>
+            <button className={`layer-mini ${locked ? 'locked' : ''}`} type="button" onClick={() => onLockChange(target, !locked)} title={locked ? 'Mở khóa' : 'Khóa'}>
               {locked ? <Lock size={14} /> : <Unlock size={14} />}
             </button>
-            <button className="layer-mini" type="button" onClick={() => onMove(target, 'up')} disabled={displayIndex === 0} title="Move up">
+            <button className="layer-mini" type="button" onClick={() => onMove(target, 'up')} disabled={isImage || displayIndex === 0} title="Đưa lên">
               <ArrowUp size={14} />
             </button>
             <button
               className="layer-mini"
               type="button"
               onClick={() => onMove(target, 'down')}
-              disabled={sourceIndex === 0}
-              title="Move down"
+              disabled={isImage || sourceIndex === 0}
+              title="Đưa xuống"
             >
               <ArrowDown size={14} />
             </button>
@@ -2148,6 +3083,7 @@ function PreviewCard({
   onLayerSelect,
   onLayerDrop,
   onLayerPatch,
+  onFrameMetricsChange,
 }: {
   variant: PlayableVariant;
   orientation: ProjectSettings['orientation'];
@@ -2158,15 +3094,25 @@ function PreviewCard({
   onLayerSelect: (layer: LayerTarget) => void;
   onLayerDrop: (layer: LayerTarget, x: number, y: number, assetId?: string) => void;
   onLayerPatch: (layer: LayerTarget, partial: Partial<LayerSettings>) => void;
+  onFrameMetricsChange?: (metrics: FrameMetrics | null) => void;
 }) {
+  const frameRef = useRef<HTMLDivElement>(null);
   const artboardRef = useRef<HTMLDivElement>(null);
   const layer = normalizeLayerSettings(variant.settings);
   const hand = getHandAsset(layer.handId);
   const ratio = orientation === 'landscape' ? '16 / 9' : '9 / 16';
-  const artboardStyle = getArtboardStyle(variant.width, variant.height, orientation, imageFit);
+  const imageFrame = getImageFrameLayout(layer, variant.width, variant.height, orientation, imageFit);
+  const artboardStyle = {
+    left: `${imageFrame.x}%`,
+    top: `${imageFrame.y}%`,
+    width: `${imageFrame.widthPercent}%`,
+    height: `${imageFrame.heightPercent}%`,
+    rotate: `${imageFrame.rotation}deg`,
+  };
   const anchoredScanCss = shouldAnchorScanToFinger(layer) ? getFingerAnchorCss(layer) : null;
   const scanAnimationVars = getScanAnimationVars(layer);
   const ctaStyleVars = getCtaStyleVars(layer);
+  const cueStyleVars = getCueStyleVars(layer);
   const orderedLayerMarkup = getLayerOrder(layer).map((target, index) => {
     const zIndex = 5 + index;
     if (target === 'scan' && layer.injectScan && layer.scanStyle !== 'none') {
@@ -2233,6 +3179,27 @@ function PreviewCard({
       );
     }
 
+    if (target === 'text' && layer.showCue) {
+      return (
+        <span
+          key="text"
+          className={`preview-cue cue-${layer.cueAnimation} ${selectedLayer === 'text' && selected ? 'active' : ''}`}
+          style={{
+            left: `${layer.cueX}%`,
+            top: `${layer.cueY}%`,
+            width: `${layer.cueWidth}%`,
+            fontSize: `${layer.cueSize}px`,
+            zIndex,
+            rotate: `${layer.cueRotation}deg`,
+            ...cueStyleVars,
+          }}
+          onPointerDown={(event) => startDrag('text', event)}
+        >
+          {layer.cueText}
+        </span>
+      );
+    }
+
     if (target === 'cta' && layer.showCta) {
       return (
         <button
@@ -2256,17 +3223,70 @@ function PreviewCard({
 
     return null;
   });
-  const selectionBox = selected ? getLayerSelectionBox(layer, selectedLayer) : null;
+  const selectionBox = selected && selectedLayer !== 'image' ? getLayerSelectionBox(layer, selectedLayer) : null;
+  const imageSelectionBox = selected && selectedLayer === 'image'
+    ? {
+        left: `${imageFrame.x}%`,
+        top: `${imageFrame.y}%`,
+        width: `${imageFrame.widthPercent}%`,
+        height: `${imageFrame.heightPercent}%`,
+        rotation: imageFrame.rotation,
+      }
+    : null;
   const selectedLayerIsLocked = isLayerLocked(layer, selectedLayer);
+
+  useEffect(() => {
+    if (!selected || !onFrameMetricsChange || !frameRef.current) return;
+    const node = frameRef.current;
+    const report = () => {
+      const rect = node.getBoundingClientRect();
+      onFrameMetricsChange({ width: rect.width, height: rect.height });
+    };
+    report();
+    const observer = new ResizeObserver(report);
+    observer.observe(node);
+    return () => {
+      observer.disconnect();
+      onFrameMetricsChange(null);
+    };
+  }, [onFrameMetricsChange, selected]);
 
   const startResize = (target: LayerTarget, event: ReactPointerEvent<HTMLElement>) => {
     event.preventDefault();
     event.stopPropagation();
     onSelect();
     onLayerSelect(target);
-    if (!artboardRef.current || isLayerLocked(layer, target)) return;
+    if (isLayerLocked(layer, target)) return;
 
-    const rect = artboardRef.current.getBoundingClientRect();
+    if (target === 'image') {
+      if (!frameRef.current) return;
+      const rect = frameRef.current.getBoundingClientRect();
+      const centerX = rect.left + (imageFrame.x / 100) * rect.width;
+      const centerY = rect.top + (imageFrame.y / 100) * rect.height;
+      const startDistance = Math.max(1, Math.hypot(event.clientX - centerX, event.clientY - centerY));
+      const startWidth = imageFrame.widthPercent;
+      const startHeight = imageFrame.heightPercent;
+
+      const move = (moveEvent: PointerEvent) => {
+        const nextDistance = Math.max(1, Math.hypot(moveEvent.clientX - centerX, moveEvent.clientY - centerY));
+        const scale = nextDistance / startDistance;
+        onLayerPatch('image', {
+          imageWidth: roundCssNumber(clamp(startWidth * scale, 12, 180)),
+          imageHeight: roundCssNumber(clamp(startHeight * scale, 12, 180)),
+        });
+      };
+      const end = () => {
+        window.removeEventListener('pointermove', move);
+        window.removeEventListener('pointerup', end);
+      };
+      window.addEventListener('pointermove', move);
+      window.addEventListener('pointerup', end, { once: true });
+      return;
+    }
+
+    if (!frameRef.current) return;
+
+    const rect = frameRef.current.getBoundingClientRect();
     const position = target === 'scan' && shouldAnchorScanToFinger(layer) ? getFingerAnchorPercent(layer, rect) : getLayerPosition(layer, target);
     const centerX = rect.left + (position.x / 100) * rect.width;
     const centerY = rect.top + (position.y / 100) * rect.height;
@@ -2290,9 +3310,32 @@ function PreviewCard({
     event.stopPropagation();
     onSelect();
     onLayerSelect(target);
-    if (!artboardRef.current || isLayerLocked(layer, target)) return;
+    if (isLayerLocked(layer, target)) return;
 
-    const rect = artboardRef.current.getBoundingClientRect();
+    if (target === 'image') {
+      if (!frameRef.current) return;
+      const rect = frameRef.current.getBoundingClientRect();
+      const centerX = rect.left + (imageFrame.x / 100) * rect.width;
+      const centerY = rect.top + (imageFrame.y / 100) * rect.height;
+      const startAngle = (Math.atan2(event.clientY - centerY, event.clientX - centerX) * 180) / Math.PI;
+      const startRotation = imageFrame.rotation;
+
+      const move = (moveEvent: PointerEvent) => {
+        const nextAngle = (Math.atan2(moveEvent.clientY - centerY, moveEvent.clientX - centerX) * 180) / Math.PI;
+        onLayerPatch('image', { imageRotation: Math.round(clamp(startRotation + nextAngle - startAngle, -180, 180)) });
+      };
+      const end = () => {
+        window.removeEventListener('pointermove', move);
+        window.removeEventListener('pointerup', end);
+      };
+      window.addEventListener('pointermove', move);
+      window.addEventListener('pointerup', end, { once: true });
+      return;
+    }
+
+    if (!frameRef.current) return;
+
+    const rect = frameRef.current.getBoundingClientRect();
     const position = target === 'scan' && shouldAnchorScanToFinger(layer) ? getFingerAnchorPercent(layer, rect) : getLayerPosition(layer, target);
     const centerX = rect.left + (position.x / 100) * rect.width;
     const centerY = rect.top + (position.y / 100) * rect.height;
@@ -2314,20 +3357,22 @@ function PreviewCard({
   const startDrag = (target: LayerTarget, event: ReactPointerEvent<HTMLElement>) => {
     event.preventDefault();
     event.stopPropagation();
-    if (!artboardRef.current) {
+    const dragSurface = frameRef.current;
+    if (!dragSurface) {
       onSelect();
       onLayerSelect(target);
       return;
     }
-    const dragTarget = resolveDragTargetForPointer(target, layer, artboardRef.current, event.clientX, event.clientY);
+    const dragTarget = target === 'image' ? 'image' : resolveDragTargetForPointer(target, layer, frameRef.current!, event.clientX, event.clientY);
     onSelect();
     onLayerSelect(dragTarget);
     if (isLayerLocked(layer, dragTarget)) return;
-    const rect = artboardRef.current.getBoundingClientRect();
-
-    const startPoint = getPointInElement(artboardRef.current, event.clientX, event.clientY);
+    const rect = frameRef.current!.getBoundingClientRect();
+    const startPoint = getPointInElement(frameRef.current!, event.clientX, event.clientY);
     const startPosition =
-      dragTarget === 'scan' && shouldAnchorScanToFinger(layer)
+      dragTarget === 'image'
+        ? { x: imageFrame.x, y: imageFrame.y }
+        : dragTarget === 'scan' && shouldAnchorScanToFinger(layer)
         ? getFingerAnchorPercent(layer, rect)
         : dragTarget === 'hand'
         ? { x: layer.handX, y: layer.handY }
@@ -2335,15 +3380,18 @@ function PreviewCard({
           ? { x: layer.scanX, y: layer.scanY }
           : dragTarget === 'asset'
             ? { x: layer.assetX, y: layer.assetY }
-            : { x: layer.ctaX, y: layer.ctaY };
+            : dragTarget === 'text'
+              ? { x: layer.cueX, y: layer.cueY }
+              : { x: layer.ctaX, y: layer.ctaY };
 
     const move = (moveEvent: PointerEvent) => {
-      if (!artboardRef.current) return;
-      const point = getPointInElement(artboardRef.current, moveEvent.clientX, moveEvent.clientY);
+      const surface = frameRef.current;
+      if (!surface) return;
+      const point = getPointInElement(surface, moveEvent.clientX, moveEvent.clientY);
       const x = clamp(startPosition.x + point.x - startPoint.x, 0, 100);
       const y = clamp(startPosition.y + point.y - startPoint.y, 0, 100);
       if (dragTarget === 'scan' && shouldAnchorScanToFinger(layer)) {
-        const nextRect = artboardRef.current.getBoundingClientRect();
+        const nextRect = frameRef.current!.getBoundingClientRect();
         const offset = getScanOffsetFromFingerPoint(layer, nextRect, x, y);
         onLayerPatch('scan', { scanOffsetX: offset.x, scanOffsetY: offset.y, injectScan: true });
         return;
@@ -2359,12 +3407,13 @@ function PreviewCard({
   };
 
   const placeLayer = (target: LayerTarget, clientX: number, clientY: number, assetId?: string) => {
-    if (!artboardRef.current) return;
-    const point = getPointInElement(artboardRef.current, clientX, clientY);
+    const surface = frameRef.current;
+    if (!surface) return;
+    const point = getPointInElement(surface, clientX, clientY);
     onSelect();
     onLayerSelect(target);
     if (target === 'scan' && shouldAnchorScanToFinger(layer)) {
-      const rect = artboardRef.current.getBoundingClientRect();
+      const rect = frameRef.current!.getBoundingClientRect();
       const offset = getScanOffsetFromFingerPoint(layer, rect, point.x, point.y);
       onLayerPatch('scan', { scanOffsetX: offset.x, scanOffsetY: offset.y, injectScan: true });
       return;
@@ -2375,11 +3424,12 @@ function PreviewCard({
   return (
     <motion.article layout className={`preview-card ${selected ? 'selected' : ''}`} style={{ aspectRatio: ratio }} onClick={onSelect}>
       <div className="preview-card-head">
-        <span>Variant {variant.index}</span>
+        <span>Bi?n th? {variant.index}</span>
         <b>{Math.round(variant.hotspot.confidence * 100)}%</b>
       </div>
       <div className="preview-stage">
         <div
+          ref={frameRef}
           className="creative-frame"
           onDragOver={(event) => {
             event.preventDefault();
@@ -2393,34 +3443,58 @@ function PreviewCard({
           }}
         >
           <img className="creative-backdrop" src={variant.dataUrl} alt="" />
-          <div ref={artboardRef} className="creative-artboard" style={artboardStyle}>
+          <div ref={artboardRef} className={`creative-artboard ${selected && selectedLayer === 'image' ? 'image-selected' : ''}`} style={artboardStyle} onPointerDown={(event) => startDrag('image', event)}>
             <img className="creative-image" src={variant.dataUrl} alt="" style={{ objectFit: imageFit }} />
-            {orderedLayerMarkup}
-            {selectionBox && (
-              <span
-                className={`selection-box ${selectedLayerIsLocked ? 'locked' : ''}`}
-                style={{
-                  left: selectionBox.left,
-                  top: selectionBox.top,
-                  width: selectionBox.width,
-                  height: selectionBox.height,
-                  rotate: `${selectionBox.rotation}deg`,
-                }}
-                onPointerDown={(event) => startDrag(selectedLayer, event)}
-              >
-                <span className="selection-handle nw" onPointerDown={(event) => startResize(selectedLayer, event)} />
-                <span className="selection-handle ne" onPointerDown={(event) => startResize(selectedLayer, event)} />
-                <span className="selection-handle sw" onPointerDown={(event) => startResize(selectedLayer, event)} />
-                <span className="selection-handle se" onPointerDown={(event) => startResize(selectedLayer, event)} />
-                <span className="selection-rotate-handle" onPointerDown={(event) => startRotate(selectedLayer, event)} />
-                {selectedLayerIsLocked && (
-                  <span className="selection-lock-badge">
-                    <Lock size={11} />
-                  </span>
-                )}
-              </span>
-            )}
           </div>
+          {orderedLayerMarkup}
+          {selectionBox && (
+            <span
+              className={`selection-box ${selectedLayerIsLocked ? 'locked' : ''}`}
+              style={{
+                left: selectionBox.left,
+                top: selectionBox.top,
+                width: selectionBox.width,
+                height: selectionBox.height,
+                rotate: `${selectionBox.rotation}deg`,
+              }}
+              onPointerDown={(event) => startDrag(selectedLayer, event)}
+            >
+              <span className="selection-handle nw" onPointerDown={(event) => startResize(selectedLayer, event)} />
+              <span className="selection-handle ne" onPointerDown={(event) => startResize(selectedLayer, event)} />
+              <span className="selection-handle sw" onPointerDown={(event) => startResize(selectedLayer, event)} />
+              <span className="selection-handle se" onPointerDown={(event) => startResize(selectedLayer, event)} />
+              <span className="selection-rotate-handle" onPointerDown={(event) => startRotate(selectedLayer, event)} />
+              {selectedLayerIsLocked && (
+                <span className="selection-lock-badge">
+                  <Lock size={11} />
+                </span>
+              )}
+            </span>
+          )}
+          {imageSelectionBox && (
+            <span
+              className={`selection-box ${selectedLayerIsLocked ? 'locked' : ''}`}
+              style={{
+                left: imageSelectionBox.left,
+                top: imageSelectionBox.top,
+                width: imageSelectionBox.width,
+                height: imageSelectionBox.height,
+                rotate: `${imageSelectionBox.rotation}deg`,
+              }}
+              onPointerDown={(event) => startDrag('image', event)}
+            >
+              <span className="selection-handle nw" onPointerDown={(event) => startResize('image', event)} />
+              <span className="selection-handle ne" onPointerDown={(event) => startResize('image', event)} />
+              <span className="selection-handle sw" onPointerDown={(event) => startResize('image', event)} />
+              <span className="selection-handle se" onPointerDown={(event) => startResize('image', event)} />
+              <span className="selection-rotate-handle" onPointerDown={(event) => startRotate('image', event)} />
+              {selectedLayerIsLocked && (
+                <span className="selection-lock-badge">
+                  <Lock size={11} />
+                </span>
+              )}
+            </span>
+          )}
         </div>
       </div>
     </motion.article>
@@ -2428,12 +3502,33 @@ function PreviewCard({
 }
 
 function EmptyPreview({ source, htmlPreview }: { source: SourceItem | null; htmlPreview?: string }) {
+  const [previewUrl, setPreviewUrl] = useState('');
+
+  useEffect(() => {
+    if (source?.kind !== 'html') {
+      setPreviewUrl('');
+      return;
+    }
+
+    const html = htmlPreview || source.html || '';
+    if (!html) {
+      setPreviewUrl('');
+      return;
+    }
+
+    const url = URL.createObjectURL(new Blob([html], { type: 'text/html;charset=utf-8' }));
+    setPreviewUrl(url);
+    return () => {
+      URL.revokeObjectURL(url);
+    };
+  }, [htmlPreview, source?.html, source?.kind]);
+
   if (source?.kind === 'html') {
     return (
       <div className="html-preview-card">
         <div className="html-preview-head">
           <div>
-            <span className="eyebrow">HTML playable</span>
+            <span className="eyebrow">Playable HTML</span>
             <h2>{source.name}</h2>
           </div>
           <FileCode2 size={18} />
@@ -2441,8 +3536,8 @@ function EmptyPreview({ source, htmlPreview }: { source: SourceItem | null; html
         <iframe
           className="html-preview-frame"
           title={`${source.name} preview`}
-          srcDoc={htmlPreview || source.html || ''}
-          sandbox="allow-scripts allow-forms allow-pointer-lock"
+          src={previewUrl || undefined}
+          sandbox="allow-scripts allow-same-origin allow-forms allow-pointer-lock allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads"
         />
       </div>
     );
@@ -2454,8 +3549,8 @@ function EmptyPreview({ source, htmlPreview }: { source: SourceItem | null; html
         {source?.dataUrl ? <img src={source.dataUrl} alt="" /> : <Grid2X2 size={56} />}
       </div>
       <div>
-        <span className="eyebrow">{source ? source.name : 'No source'}</span>
-        <h2>Generate 4 variants</h2>
+        <span className="eyebrow">{source ? source.name : 'Chưa có ảnh nguồn'}</span>
+        <h2>Tạo các biến thể playable</h2>
       </div>
     </div>
   );
@@ -2485,15 +3580,6 @@ function NumberControl({
   );
 }
 
-function StatusPill({ icon, label, ready, loading }: { icon: React.ReactNode; label: string; ready: boolean; loading: boolean }) {
-  return (
-    <span className={`status-pill ${loading ? 'busy' : ready ? 'ready' : 'error'}`}>
-      {loading ? <Loader2 className="spin" size={14} /> : icon}
-      {label}
-    </span>
-  );
-}
-
 function NoticeView({ notice }: { notice: Notice }) {
   if (!notice) return null;
   const Icon = notice.tone === 'ok' ? CheckCircle2 : notice.tone === 'busy' ? Loader2 : AlertCircle;
@@ -2517,7 +3603,8 @@ function normalizeLayerSettings(settings: Partial<LayerSettings>): LayerSettings
     ...defaultLayerSettings,
     ...settings,
   } as LayerSettings;
-  const scanStyle = merged.scanStyle === 'none' ? 'none' : 'frame';
+  const validScanStyles: ScanStyle[] = ['ripple', 'face', 'sweep', 'ring', 'spotlight', 'border', 'frame', 'spark', 'none'];
+  const scanStyle = validScanStyles.includes(merged.scanStyle) ? merged.scanStyle : 'frame';
   const legacyScanNames = new Set(['Tap Ripple', 'Face Scan', 'Pulse Ring', 'Sweep Line', 'Spotlight', 'Border Scan', 'Spark Hit', 'Square Light Scan']);
   const scanAnimationName =
     scanStyle === 'none'
@@ -2534,6 +3621,9 @@ function normalizeLayerSettings(settings: Partial<LayerSettings>): LayerSettings
     ctaColorTo: normalizeHexColor(merged.ctaColorTo, '#f45100'),
     ctaTextColor: normalizeHexColor(merged.ctaTextColor, '#ffffff'),
     ctaShadowColor: normalizeHexColor(merged.ctaShadowColor, '#f45100'),
+    cueColor: normalizeHexColor(merged.cueColor, '#ffffff'),
+    cueBgColor: normalizeHexColor(merged.cueBgColor, '#111827'),
+    cueShadowColor: normalizeHexColor(merged.cueShadowColor, '#000000'),
     layerOrder: getLayerOrder(merged),
   };
 }
@@ -2558,10 +3648,11 @@ function hexToRgbTriplet(value?: string, fallback = '#7c3cff') {
 function getLayerOrder(settings: Partial<LayerSettings>): LayerTarget[] {
   const hasExplicitOrder = Array.isArray(settings.layerOrder);
   const raw = hasExplicitOrder ? settings.layerOrder || [] : defaultLayerSettings.layerOrder;
-  const valid = raw.filter((layer): layer is LayerTarget => layer === 'hand' || layer === 'scan' || layer === 'asset' || layer === 'cta');
+  const valid = raw.filter((layer): layer is LayerTarget => layer === 'hand' || layer === 'scan' || layer === 'asset' || layer === 'cta' || layer === 'text');
   const next = valid.filter((layer, index) => valid.indexOf(layer) === index);
   if (settings.injectScan && settings.scanStyle !== 'none' && !next.includes('scan')) next.push('scan');
   if (settings.injectAsset && !next.includes('asset')) next.push('asset');
+  if (settings.showCue && !next.includes('text')) next.push('text');
   if (settings.showCta && !next.includes('cta')) next.push('cta');
   if (settings.injectHand && !next.includes('hand')) next.push('hand');
   return keepHandAboveCta(keepCtaAboveScan(next));
@@ -2598,16 +3689,20 @@ function keepCtaAboveScan(order: LayerTarget[]) {
 }
 
 function isLayerVisible(layer: LayerSettings, target: LayerTarget) {
+  if (target === 'image') return true;
   if (target === 'hand') return layer.injectHand;
   if (target === 'scan') return layer.injectScan && layer.scanStyle !== 'none';
   if (target === 'asset') return layer.injectAsset;
+  if (target === 'text') return layer.showCue;
   return layer.showCta;
 }
 
 function getLayerPosition(layer: LayerSettings, target: LayerTarget) {
+  if (target === 'image') return { x: layer.imageX, y: layer.imageY };
   if (target === 'hand') return { x: layer.handX, y: layer.handY };
   if (target === 'scan') return { x: layer.scanX, y: layer.scanY };
   if (target === 'asset') return { x: layer.assetX, y: layer.assetY };
+  if (target === 'text') return { x: layer.cueX, y: layer.cueY };
   return { x: layer.ctaX, y: layer.ctaY };
 }
 
@@ -2640,16 +3735,20 @@ function getScanOffsetFromFingerPoint(layer: LayerSettings, rect: DOMRect, x: nu
 }
 
 function getLayerRotation(layer: LayerSettings, target: LayerTarget) {
+  if (target === 'image') return layer.imageRotation;
   if (target === 'hand') return layer.handRotation;
   if (target === 'scan') return layer.scanRotation;
   if (target === 'asset') return layer.assetRotation;
+  if (target === 'text') return layer.cueRotation;
   return layer.ctaRotation;
 }
 
 function getLayerSizeValue(layer: LayerSettings, target: LayerTarget) {
+  if (target === 'image') return Math.max(layer.imageWidth || 100, layer.imageHeight || 100);
   if (target === 'hand') return layer.handSize;
   if (target === 'scan') return layer.scanSize;
   if (target === 'asset') return layer.assetSize;
+  if (target === 'text') return layer.cueWidth;
   return layer.ctaWidth;
 }
 
@@ -2659,6 +3758,16 @@ function getLayerSelectionBox(layer: LayerSettings, target: LayerTarget) {
   const rotation = getLayerRotation(layer, target);
   const anchoredScan = target === 'scan' && shouldAnchorScanToFinger(layer) ? getFingerAnchorCss(layer) : null;
 
+  if (target === 'image') {
+    return {
+      left: `${position.x}%`,
+      top: `${position.y}%`,
+      rotation,
+      width: `${layer.imageWidth}%`,
+      height: `${layer.imageHeight}%`,
+    };
+  }
+
   if (target === 'cta') {
     return {
       left: `${position.x}%`,
@@ -2666,6 +3775,16 @@ function getLayerSelectionBox(layer: LayerSettings, target: LayerTarget) {
       rotation,
       width: `${layer.ctaWidth}%`,
       height: '42px',
+    };
+  }
+
+  if (target === 'text') {
+    return {
+      left: `${position.x}%`,
+      top: `${position.y}%`,
+      rotation,
+      width: `${layer.cueWidth}%`,
+      height: `${Math.max(32, layer.cueSize + 18)}px`,
     };
   }
 
@@ -2679,8 +3798,44 @@ function getLayerSelectionBox(layer: LayerSettings, target: LayerTarget) {
   };
 }
 
+function getLayerSelectionMetrics(
+  layer: LayerSettings,
+  target: LayerTarget,
+  frame: FrameMetrics,
+  imageFrame: ReturnType<typeof getImageFrameLayout>,
+) {
+  if (!isLayerVisible(layer, target) || frame.width <= 0 || frame.height <= 0) return null;
+
+  if (target === 'image') {
+    return {
+      widthPercent: imageFrame.widthPercent,
+      heightPercent: imageFrame.heightPercent,
+    };
+  }
+
+  if (target === 'cta') {
+    return {
+      widthPercent: clamp(layer.ctaWidth, 1, 100),
+      heightPercent: (42 / frame.height) * 100,
+    };
+  }
+
+  if (target === 'text') {
+    return {
+      widthPercent: clamp(layer.cueWidth, 1, 100),
+      heightPercent: (Math.max(32, layer.cueSize + 18) / frame.height) * 100,
+    };
+  }
+
+  const size = getLayerSizeValue(layer, target);
+  return {
+    widthPercent: (size / frame.width) * 100,
+    heightPercent: (size / frame.height) * 100,
+  };
+}
+
 function resolveDragTargetForPointer(target: LayerTarget, layer: LayerSettings, artboard: HTMLElement, clientX: number, clientY: number) {
-  if (target === 'cta' || target === 'hand' || !layer.showCta) return target;
+  if (target === 'image' || target === 'cta' || target === 'hand' || target === 'text' || !layer.showCta) return target;
   const cta = artboard.querySelector<HTMLElement>('.preview-cta');
   if (!cta) return target;
   const rect = cta.getBoundingClientRect();
@@ -2709,10 +3864,20 @@ function getCtaStyleVars(layer: LayerSettings) {
   };
 }
 
+function getCueStyleVars(layer: LayerSettings) {
+  return {
+    ['--cue-color' as string]: normalizeHexColor(layer.cueColor, '#ffffff'),
+    ['--cue-bg' as string]: normalizeHexColor(layer.cueBgColor, '#111827'),
+    ['--cue-shadow-rgb' as string]: hexToRgbTriplet(layer.cueShadowColor, '#000000'),
+  };
+}
+
 function layerIcon(target: LayerTarget) {
+  if (target === 'image') return <ImagePlus size={15} />;
   if (target === 'hand') return <Hand size={15} />;
   if (target === 'scan') return <ScanLine size={15} />;
   if (target === 'asset') return <Activity size={15} />;
+  if (target === 'text') return <Hash size={15} />;
   return <MousePointerClick size={15} />;
 }
 
@@ -2836,6 +4001,74 @@ function defaultHotspot(): Hotspot {
   return { x: 50, y: 72, confidence: 0.28, reason: 'fallback' };
 }
 
+async function optimizeImageForAppLovin(image: ExportImageInput, orientation: ProjectSettings['orientation']): Promise<ExportImageInput> {
+  const maxFrame = orientation === 'landscape' ? { width: 1280, height: 720 } : { width: 720, height: 1280 };
+  const source = await loadImageForCanvas(image.dataUrl).catch(() => null);
+  if (!source) return image;
+
+  const sourceWidth = source.naturalWidth || image.width || maxFrame.width;
+  const sourceHeight = source.naturalHeight || image.height || maxFrame.height;
+  const baseScale = Math.min(1, maxFrame.width / sourceWidth, maxFrame.height / sourceHeight);
+  const attempts = [
+    { scale: baseScale, quality: 0.86 },
+    { scale: baseScale, quality: 0.78 },
+    { scale: baseScale, quality: 0.7 },
+    { scale: baseScale * 0.88, quality: 0.72 },
+    { scale: baseScale * 0.78, quality: 0.68 },
+    { scale: baseScale * 0.66, quality: 0.64 },
+  ];
+  let best: ExportImageInput | null = null;
+
+  for (const attempt of attempts) {
+    const width = Math.max(1, Math.round(sourceWidth * attempt.scale));
+    const height = Math.max(1, Math.round(sourceHeight * attempt.scale));
+    const dataUrl = renderJpegDataUrl(source, width, height, attempt.quality);
+    const candidate = { ...image, dataUrl, width, height };
+    if (!best || candidate.dataUrl.length < best.dataUrl.length) best = candidate;
+    if (dataUrl.length < 3_800_000) return candidate;
+  }
+
+  return best || image;
+}
+
+function loadImageForCanvas(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onerror = () => reject(new Error('Cannot optimize image.'));
+    image.onload = () => resolve(image);
+    image.src = src;
+  });
+}
+
+function renderJpegDataUrl(image: HTMLImageElement, width: number, height: number, quality: number) {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d');
+  if (!context) return image.src;
+  context.fillStyle = '#ffffff';
+  context.fillRect(0, 0, width, height);
+  context.drawImage(image, 0, 0, width, height);
+  return canvas.toDataURL('image/jpeg', quality);
+}
+
+function getExportNotice(network: NetworkTarget, bytes: number, html: string): Notice {
+  const sizeMb = (bytes / 1024 / 1024).toFixed(2);
+  if (network === 'applovin') {
+    if (bytes > APPLOVIN_MAX_HTML_BYTES) {
+      return { tone: 'warn', text: `AppLovin HTML ${sizeMb}MB > 5MB` };
+    }
+    if (hasExternalResource(html)) {
+      return { tone: 'warn', text: 'HTML AppLovin c?n t?i nguy?n ngo?i' };
+    }
+  }
+  return { tone: 'ok', text: `Đã xuất ${networkLabels[network]} HTML (${sizeMb}MB)` };
+}
+
+function hasExternalResource(html: string) {
+  return /\b(?:src|href)\s*=\s*["']https?:\/\//i.test(html) || /https?:\/\/(?!apps\.apple\.com|play\.google\.com|itunes\.apple\.com)/i.test(html);
+}
+
 function downloadBlob(name: string, content: Blob | string, type: string) {
   const blob = content instanceof Blob ? content : new Blob([content], { type });
   const url = URL.createObjectURL(blob);
@@ -2847,3 +4080,12 @@ function downloadBlob(name: string, content: Blob | string, type: string) {
   anchor.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+
+
+
+
+
+
+
+
+

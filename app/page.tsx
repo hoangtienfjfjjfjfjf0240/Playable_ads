@@ -1,5 +1,5 @@
-import { PlayableStudio } from '../components/PlayableStudio';
+import { StudioDashboard } from '../components/StudioDashboard';
 
 export default function Home() {
-  return <PlayableStudio />;
+  return <StudioDashboard />;
 }
