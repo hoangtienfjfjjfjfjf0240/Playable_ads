@@ -225,12 +225,12 @@ export function StudioDashboard() {
         }),
       });
       const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(typeof payload?.error === 'string' ? payload.error : 'Cannot create app.');
+      if (!response.ok) throw new Error(typeof payload?.error === 'string' ? payload.error : 'Không thể tạo ứng dụng.');
       setDashboard(payload as StudioDashboardPayload);
       setNewAppName('');
       setMessage(`Đã tạo ứng dụng mới trong ${compactWorkspaceName(createWorkspaceTarget?.name || 'không gian đã chọn')}.`);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Cannot create app.');
+      setError(reason instanceof Error ? reason.message : 'Không thể tạo ứng dụng.');
     } finally {
       setAppBusy(false);
     }
@@ -256,11 +256,11 @@ export function StudioDashboard() {
         },
       });
       const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(typeof payload?.error === 'string' ? payload.error : 'Cannot delete app.');
+      if (!response.ok) throw new Error(typeof payload?.error === 'string' ? payload.error : 'Không thể xóa ứng dụng.');
       setDashboard(payload as StudioDashboardPayload);
       setMessage(`Đã xóa ứng dụng ${appName}.`);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Cannot delete app.');
+      setError(reason instanceof Error ? reason.message : 'Không thể xóa ứng dụng.');
     } finally {
       setDeleteAppId('');
     }
@@ -369,12 +369,12 @@ export function StudioDashboard() {
 
             <div className="dashboard-overview-grid">
               <article className="dashboard-mini-stat">
-                <span>App</span>
+                <span>Ứng dụng</span>
                 <strong>{dashboard.stats.appCount}</strong>
                 <small>Tổng trình chỉnh sửa</small>
               </article>
               <article className="dashboard-mini-stat">
-                <span>Project</span>
+                <span>Dự án</span>
                 <strong>{dashboard.stats.projectCount}</strong>
                 <small>Toàn bộ</small>
               </article>
@@ -414,7 +414,7 @@ export function StudioDashboard() {
                       <span className={`dashboard-role-badge ${roleTone}`}>{formatWorkspaceRole(roleTone)}</span>
                     </div>
                     <div className="dashboard-scope-meta">
-                      <span>{workspace.appCount} app</span>
+                      <span>{workspace.appCount} ứng dụng</span>
                       <span>{workspace.projectCount} dự án</span>
                     </div>
                     <small className="dashboard-scope-note">

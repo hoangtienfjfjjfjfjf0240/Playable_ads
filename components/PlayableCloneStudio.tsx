@@ -81,7 +81,7 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
   const [settings, setSettings] = useState<ProjectSettings>(() =>
     normalizeProjectSettings({
       ...createDefaultProjectSettings(),
-      name: 'B?n clone playable',
+      name: 'Bản clone playable',
       prompt: '',
       variantCount: 4,
     }),
@@ -473,7 +473,7 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
 
   const openInStudio = () => {
     if (!sourceCapture || !variants.length) {
-      setNotice({ tone: 'error', text: 'Cần tạo variants trước.' });
+      setNotice({ tone: 'error', text: 'Cần tạo biến thể trước.' });
       return;
     }
 
@@ -510,8 +510,8 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
             <FileCode2 size={20} />
           </div>
           <div>
-            <strong>T?i t?o playable</strong>
-            <span>Tuyến bổ sung, không ảnh hưởng luồng editor cũ</span>
+            <strong>Tái tạo playable</strong>
+            <span>Tính năng bổ sung, không ảnh hưởng luồng chỉnh sửa cũ</span>
           </div>
         </div>
 
@@ -535,8 +535,8 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
                 <WandSparkles size={16} />
               </span>
               <span className="sidebar-feature-copy">
-                <strong>Tr?nh ch?nh s?a</strong>
-                <small>Trình chỉnh sửa chính của ứng dụng này</small>
+                <strong>Trình chỉnh sửa</strong>
+                <small>Khu chỉnh sửa chính của ứng dụng này</small>
               </span>
             </Link>
             <Link href={`/apps/${appId}/clone`} className="sidebar-feature-item active">
@@ -544,7 +544,7 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
                 <FileCode2 size={16} />
               </span>
               <span className="sidebar-feature-copy">
-                <strong>T?i t?o playable</strong>
+                <strong>Tái tạo playable</strong>
                 <small>Dựng lại từ playable HTML nguồn</small>
               </span>
             </Link>
@@ -845,7 +845,7 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
         <div className="workspace-top">
           <div>
             <span className="eyebrow">Không gian clone</span>
-            <h1>{settings.name || 'B?n clone playable'}</h1>
+            <h1>{settings.name || 'Bản clone playable'}</h1>
           </div>
         </div>
 
@@ -891,7 +891,7 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
                   }}
                 >
                   <div className="preview-card-head">
-                    <span>{`Bi?n th? ${variant.index}`}</span>
+                    <span>{`Biến thể ${variant.index}`}</span>
                     <b>{Math.round((variant.plan?.confidence || 0.72) * 100)}%</b>
                   </div>
                   <div className="clone-card-stage">
@@ -902,7 +902,7 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
                     )}
                   </div>
                   <div className="clone-card-foot">
-                    <strong>{variant.plan ? playableIntentLabels[variant.plan.intent] : 'B?n clone'}</strong>
+                    <strong>{variant.plan ? playableIntentLabels[variant.plan.intent] : 'Bản clone'}</strong>
                     <small>{variant.settings.cueText || variant.settings.ctaText}</small>
                   </div>
                 </article>

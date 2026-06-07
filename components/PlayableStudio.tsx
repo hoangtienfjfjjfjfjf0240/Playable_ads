@@ -301,12 +301,12 @@ const layerLockFieldMap: Record<LayerTarget, keyof LayerSettings> = {
   text: 'cueLocked',
 };
 const layerMeta: Record<LayerTarget, { label: string; group: string }> = {
-  image: { label: '?nh', group: 'N?n' },
-  hand: { label: 'Tay', group: 'T??ng t?c' },
-  scan: { label: 'Scan', group: 'Nh?n di?n' },
-  asset: { label: 'Hi?u ?ng', group: 'Hi?n th?' },
-  cta: { label: 'CTA', group: 'H?nh ??ng' },
-  text: { label: 'Ch? nh?c', group: 'L?i nh?c' },
+  image: { label: 'Ảnh', group: 'Nền' },
+  hand: { label: 'Tay', group: 'Tương tác' },
+  scan: { label: 'Scan', group: 'Nhận diện' },
+  asset: { label: 'Hiệu ứng', group: 'Hiển thị' },
+  cta: { label: 'CTA', group: 'Hành động' },
+  text: { label: 'Chữ nhắc', group: 'Lời nhắc' },
 };
 const layerPickerTargets: LayerTarget[] = ['image', 'hand', 'scan', 'cta', 'text'];
 const storeTargetMeta: Record<
@@ -322,29 +322,29 @@ const storeTargetMeta: Record<
     label: 'App Store',
     field: 'appStoreUrl',
     placeholder: 'https://apps.apple.com/app/...',
-    hint: 'D?ng khi playable n?y c?n m? App Store.',
+    hint: 'Dùng khi playable này cần mở App Store.',
   },
   'google-play': {
     label: 'Google Play',
     field: 'googlePlayUrl',
     placeholder: 'https://play.google.com/store/apps/details?id=...',
-    hint: 'D?ng khi playable n?y c?n m? Google Play.',
+    hint: 'Dùng khi playable này cần mở Google Play.',
   },
   custom: {
-    label: 'URL t?y ch?nh',
+    label: 'URL tùy chỉnh',
     field: 'storeUrl',
     placeholder: 'https://example.com/landing',
-    hint: 'D?ng cho landing page ho?c b?t k? ??ch n?o ngo?i store.',
+    hint: 'Dùng cho landing page hoặc bất kỳ đích nào ngoài store.',
   },
 };
 const storeRoutingMeta: Record<ProjectSettings['storeRoutingMode'], { label: string; hint: string }> = {
   single: {
-    label: 'M?t li?n k?t',
-    hint: 'Xu?t m?t ??ch duy nh?t. Ch?n App Store, Google Play ho?c URL t?y ch?nh.',
+    label: 'Một liên kết',
+    hint: 'Xuất một đích duy nhất. Chọn App Store, Google Play hoặc URL tùy chỉnh.',
   },
   'platform-auto': {
-    label: 'T? ch?n theo thi?t b?',
-    hint: 'Xu?t c? hai li?n k?t store. iOS m? App Store, Android m? Google Play.',
+    label: 'Tự chọn theo thiết bị',
+    hint: 'Xuất cả hai liên kết store. iOS mở App Store, Android mở Google Play.',
   },
 };
 const aiProviderModelMap: Record<ProjectSettings['aiProvider'], string> = {
@@ -1576,7 +1576,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
     setSelectedLayer('hand');
     setLastAiDuration(entry.durationSeconds);
     setAiWorkers(Array.from({ length: Math.max(restored.length, targetVariantCount) }, (_, index) => (index < restored.length ? 'done' : 'idle')));
-    setNotice({ tone: 'ok', text: `?? kh?i ph?c ${restored.length} bi?n th? t? l?ch s?` });
+    setNotice({ tone: 'ok', text: `Đã khôi phục ${restored.length} biến thể từ lịch sử` });
   };
 
   const applyRecipe = (recipeId: string) => {
@@ -1915,9 +1915,9 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
     return (
       <main className="dashboard-state">
         <AlertCircle size={18} />
-        <span>Editor này yêu cầu đăng nhập Supabase.</span>
+        <span>Trình chỉnh sửa này yêu cầu đăng nhập Supabase.</span>
         <Link href="/" className="secondary-button">
-          Quay láº¡i dashboard
+          Quay lại tổng quan
         </Link>
       </main>
     );
@@ -1957,8 +1957,8 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                   <WandSparkles size={16} />
                 </span>
                 <span className="sidebar-feature-copy">
-                  <strong>Tr?nh ch?nh s?a</strong>
-                  <small>Trình chỉnh sửa chính của ứng dụng này</small>
+                  <strong>Trình chỉnh sửa</strong>
+                  <small>Khu chỉnh sửa chính của ứng dụng này</small>
                 </span>
               </Link>
               <Link href={`/apps/${appId}/clone`} className="sidebar-feature-item">
@@ -1966,7 +1966,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                   <FileCode2 size={16} />
                 </span>
                 <span className="sidebar-feature-copy">
-                  <strong>T?i t?o playable</strong>
+                  <strong>Tái tạo playable</strong>
                   <small>Dựng lại từ playable HTML nguồn</small>
                 </span>
               </Link>
@@ -2225,7 +2225,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
           <div>
             <span className="eyebrow">{appScopedEditor ? studioWorkspace?.name || 'Không gian' : 'Không gian'}</span>
             <h1>{settings.name || 'Lô playable'}</h1>
-            {appScopedEditor ? <p className='workspace-context-note'>{studioApp?.name || 'Editor ứng dụng'} · Trình chỉnh sửa project</p> : null}
+            {appScopedEditor ? <p className="workspace-context-note">{studioApp?.name || 'Ứng dụng hiện tại'} · Trình chỉnh sửa dự án</p> : null}
           </div>
           <div className="workspace-top-side">
             {appScopedEditor ? (
@@ -2244,7 +2244,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
             ) : null}
             <div className="toolbar">
               <label className="batch-count-control" title={`1-${MAX_VARIANT_COUNT} variants`}>
-                <span>L?</span>
+                <span>Lô</span>
                 <input
                   type="number"
                   min={1}
@@ -2257,7 +2257,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                 <Grid2X2 size={16} />
                 Nháp x{targetVariantCount}
               </button>
-              <div className="fit-toggle" role="group" aria-label="Ch? ?? khung ?nh">
+              <div className="fit-toggle" role="group" aria-label="Chế độ khung ảnh">
                 <button
                   className={activeImageFit === 'cover' ? 'active' : ''}
                   type="button"
@@ -2265,7 +2265,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                   title="Phủ đầy khung 9:16 mà không méo ảnh"
                 >
                   <Maximize2 size={14} />
-                  Fill
+                  Phủ
                 </button>
                 <button
                   className={activeImageFit === 'contain' ? 'active' : ''}
@@ -2274,27 +2274,27 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                   title="Hiện trọn ảnh mà không cắt"
                 >
                   <Minimize2 size={14} />
-                  Fit
+                  Vừa
                 </button>
               </div>
-              <div className="align-toolbar" role="group" aria-label={`C?n ${selectedLayerMeta.label}`}>
+              <div className="align-toolbar" role="group" aria-label={`Căn ${selectedLayerMeta.label}`}>
                 <span className="align-toolbar-label">{selectedLayerMeta.label}</span>
-                <button type="button" onClick={() => alignSelectedLayer('left')} disabled={!canAlignSelectedLayer} title="C?n tr?i">
+                <button type="button" onClick={() => alignSelectedLayer('left')} disabled={!canAlignSelectedLayer} title="Căn trái">
                   L
                 </button>
-                <button type="button" onClick={() => alignSelectedLayer('center')} disabled={!canAlignSelectedLayer} title="C?n gi?a ngang">
+                <button type="button" onClick={() => alignSelectedLayer('center')} disabled={!canAlignSelectedLayer} title="Căn giữa ngang">
                   C
                 </button>
-                <button type="button" onClick={() => alignSelectedLayer('right')} disabled={!canAlignSelectedLayer} title="C?n ph?i">
+                <button type="button" onClick={() => alignSelectedLayer('right')} disabled={!canAlignSelectedLayer} title="Căn phải">
                   R
                 </button>
-                <button type="button" onClick={() => alignSelectedLayer('top')} disabled={!canAlignSelectedLayer} title="C?n tr?n">
+                <button type="button" onClick={() => alignSelectedLayer('top')} disabled={!canAlignSelectedLayer} title="Căn trên">
                   T
                 </button>
-                <button type="button" onClick={() => alignSelectedLayer('middle')} disabled={!canAlignSelectedLayer} title="C?n gi?a d?c">
+                <button type="button" onClick={() => alignSelectedLayer('middle')} disabled={!canAlignSelectedLayer} title="Căn giữa dọc">
                   M
                 </button>
-                <button type="button" onClick={() => alignSelectedLayer('bottom')} disabled={!canAlignSelectedLayer} title="C?n d??i">
+                <button type="button" onClick={() => alignSelectedLayer('bottom')} disabled={!canAlignSelectedLayer} title="Căn dưới">
                   B
                 </button>
               </div>
@@ -2304,7 +2304,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
               </button>
               <button className="primary-button" type="button" onClick={generateVariants} disabled={!activeSource || activeSource.kind !== 'image' || busy || !activeAiReady}>
                 {busy ? <Loader2 className="spin" size={16} /> : <WandSparkles size={16} />}
-                T?o {targetVariantCount}
+                Tạo {targetVariantCount}
               </button>
             </div>
           </div>
@@ -2313,10 +2313,10 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         <div className="notice-row">
           <NoticeView notice={notice} />
           <div className="playback-controls">
-            <button className="icon-button" type="button" onClick={() => setPaused((value) => !value)} title={paused ? 'Ch?y' : 'T?m d?ng'}>
+            <button className="icon-button" type="button" onClick={() => setPaused((value) => !value)} title={paused ? 'Chạy' : 'Tạm dừng'}>
               {paused ? <Play size={16} /> : <Eye size={16} />}
             </button>
-            <button className="icon-button" type="button" onClick={refreshHealth} title="L?m m?i tr?ng th?i">
+            <button className="icon-button" type="button" onClick={refreshHealth} title="Làm mới trạng thái">
               <RefreshCw size={16} />
             </button>
           </div>
@@ -2424,7 +2424,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         <div className="inspector-head">
           <div>
             <span className="eyebrow">Bảng điều khiển</span>
-            <h2>{selectedVariant ? `Bi?n th? ${selectedVariant.index}` : activeSource?.kind === 'html' ? 'Bản vá HTML' : 'Cài đặt'}</h2>
+            <h2>{selectedVariant ? `Biến thể ${selectedVariant.index}` : activeSource?.kind === 'html' ? 'Bản vá HTML' : 'Cài đặt'}</h2>
           </div>
           <Settings2 size={18} />
         </div>
@@ -2565,7 +2565,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
               checked={settings.useAiAnalyze}
               onChange={(event) => setProjectSetting('useAiAnalyze', event.target.checked)}
             />
-            <span>AI Analyze for Tự lên plan</span>
+            <span>Dùng AI Analyze để tự lên plan</span>
           </label>
           <label className="check-row">
             <input type="checkbox" checked={settings.useClickTag} onChange={(event) => setProjectSetting('useClickTag', event.target.checked)} />
@@ -2609,7 +2609,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
           </div>
           {selectedVariant && (
             <div className="analysis-card">
-              <span>{selectedVariant.plan ? `${selectedVariant.plan.source.toUpperCase()} auto-plan` : 'AI đặt vị trí'}</span>
+              <span>{selectedVariant.plan ? `Plan ${selectedVariant.plan.source.toUpperCase()}` : 'AI đặt vị trí'}</span>
               <strong>{Math.round(selectedVariant.hotspot.confidence * 100)}% tin cậy</strong>
               <small>
                 {selectedVariant.plan ? `${playableIntentLabels[selectedVariant.plan.intent]} / ${selectedVariant.plan.recipeId}` : `X ${Math.round(selectedVariant.hotspot.x)} / Y ${Math.round(selectedVariant.hotspot.y)}`} - {layerForControls.handMotion} +{' '}
@@ -2985,7 +2985,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
             </button>
             <button className="primary-button wide" type="button" onClick={saveProject} disabled={busy || !variants.length}>
               <Save size={16} />
-              Save
+              Lưu
             </button>
           </div>
         </section>
@@ -3424,7 +3424,7 @@ function PreviewCard({
   return (
     <motion.article layout className={`preview-card ${selected ? 'selected' : ''}`} style={{ aspectRatio: ratio }} onClick={onSelect}>
       <div className="preview-card-head">
-        <span>Bi?n th? {variant.index}</span>
+        <span>Biến thể {variant.index}</span>
         <b>{Math.round(variant.hotspot.confidence * 100)}%</b>
       </div>
       <div className="preview-stage">
@@ -3528,7 +3528,7 @@ function EmptyPreview({ source, htmlPreview }: { source: SourceItem | null; html
       <div className="html-preview-card">
         <div className="html-preview-head">
           <div>
-            <span className="eyebrow">Playable HTML</span>
+            <span className="eyebrow">HTML playable</span>
             <h2>{source.name}</h2>
           </div>
           <FileCode2 size={18} />
@@ -4059,7 +4059,7 @@ function getExportNotice(network: NetworkTarget, bytes: number, html: string): N
       return { tone: 'warn', text: `AppLovin HTML ${sizeMb}MB > 5MB` };
     }
     if (hasExternalResource(html)) {
-      return { tone: 'warn', text: 'HTML AppLovin c?n t?i nguy?n ngo?i' };
+      return { tone: 'warn', text: 'HTML AppLovin cần tài nguyên ngoài' };
     }
   }
   return { tone: 'ok', text: `Đã xuất ${networkLabels[network]} HTML (${sizeMb}MB)` };
