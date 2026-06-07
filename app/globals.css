@@ -128,6 +128,25 @@ img {
 
 .auth-brand {
   gap: 12px;
+  align-items: flex-start;
+}
+
+.auth-brand > div:last-child {
+  display: grid;
+  gap: 4px;
+}
+
+.auth-brand strong {
+  display: block;
+  font-size: 16px;
+  font-weight: 900;
+}
+
+.auth-brand span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .auth-mode-row {

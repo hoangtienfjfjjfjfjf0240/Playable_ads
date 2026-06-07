@@ -1083,7 +1083,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
       }
       setNotice({ tone: 'ok', text: `${imported.length} file sẵn sàng` });
     } catch (error) {
-      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Import tháº¥t báº¡i' });
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Import thất bại' });
     } finally {
       setBusy(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -1305,7 +1305,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
       setVariants(next);
       setNotice({ tone: 'ok', text: `Đã auto-plan ${next.length} bản xem trước${settings.useAiAnalyze ? ' bằng AI Analyze' : ' bằng local heuristic'}` });
     } catch (error) {
-      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Detect tháº¥t báº¡i' });
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Detect thất bại' });
     } finally {
       setBusy(false);
     }
@@ -1445,7 +1445,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
       downloadBlob(`${safeFileName(settings.name)}_${variants.length}_playables_5_networks.zip`, blob, 'application/zip');
       setNotice({ tone: 'ok', text: `Đã xuất ZIP ${variants.length} playable` });
     } catch (error) {
-      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Export ZIP tháº¥t báº¡i' });
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Export ZIP thất bại' });
     } finally {
       setBusy(false);
     }
@@ -1484,7 +1484,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
       if (appScopedEditor) await fetchSavedProjects();
       setNotice({ tone: 'ok', text: `Đã lưu project ${payload.id}` });
     } catch (error) {
-      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'LÆ°u tháº¥t báº¡i' });
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Lưu thất bại' });
     } finally {
       setBusy(false);
     }
@@ -1906,7 +1906,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
     return (
       <main className="dashboard-state">
         <Loader2 className="spin" size={18} />
-        <span>Đang kiểm tra đăng nhập editor...</span>
+        <span>Đang kiểm tra đăng nhập trình chỉnh sửa...</span>
       </main>
     );
   }

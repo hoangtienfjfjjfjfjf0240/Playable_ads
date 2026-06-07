@@ -389,7 +389,7 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
       setSelectedVariantId(nextVariants[0]?.id || '');
       setNotice({ tone: 'ok', text: `Đã tạo ${nextVariants.length} bản xem trước playable clone.` });
     } catch (error) {
-      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Táº¡o clone tháº¥t báº¡i.' });
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Tạo clone thất bại.' });
     } finally {
       setBusy('');
     }
@@ -435,7 +435,7 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
       downloadBlob(`${safeName}_5_networks.zip`, blob, 'application/zip');
       setNotice({ tone: 'ok', text: `Đã xuất 5 network cho ${selectedVariant.name}.` });
     } catch (error) {
-      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Xuáº¥t 5 network tháº¥t báº¡i.' });
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Xuất 5 network thất bại.' });
     } finally {
       setBusy('');
     }
@@ -465,7 +465,7 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
       downloadBlob(`${safeFileName(settings.name)}_${variants.length}_clone_playables_5_networks.zip`, blob, 'application/zip');
       setNotice({ tone: 'ok', text: `Đã xuất ZIP ${variants.length} playable clone.` });
     } catch (error) {
-      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Xuáº¥t ZIP clone tháº¥t báº¡i.' });
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Xuất ZIP clone thất bại.' });
     } finally {
       setBusy('');
     }

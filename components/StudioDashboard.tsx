@@ -303,7 +303,7 @@ export function StudioDashboard() {
             <input value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@company.com" />
           </label>
           <label className="field">
-            <span>Password</span>
+            <span>Mật khẩu</span>
             <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="........" />
           </label>
 
