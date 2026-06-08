@@ -2,20 +2,19 @@
 
 import {
   AlertCircle,
+  ArrowLeft,
   CheckCircle2,
   Download,
   ExternalLink,
   FileCode2,
-  Grid2X2,
   Loader2,
   Package,
   RefreshCw,
-  Sparkles,
   Upload,
   WandSparkles,
 } from 'lucide-react';
 import Link from 'next/link';
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   createDefaultProjectSettings,
   generateImagePlayableHtml,
@@ -100,6 +99,37 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
 
   const storeConfig = useMemo(() => resolveProjectStoreConfig(settings), [settings]);
   const selectedVariant = variants.find((item) => item.id === selectedVariantId) || variants[0] || null;
+  const cloneSourceLabel = analysis ? (analysis.convertedFromWrapper ? 'Wrapper đã xử lý' : 'HTML trực tiếp') : 'Chưa có nguồn';
+
+  const resetCloneWorkspace = useCallback(() => {
+    setAnalysis(null);
+    setPreviewVariants({});
+    setSourceCapture(null);
+    setVariants([]);
+    setNotice({ tone: 'ok', text: 'Đã tạo phiên clone mới.' });
+    setBusy('');
+    setSelectedVariantId('');
+    setInference(null);
+    setSourceLayout(null);
+    setSyncLayerEdits(true);
+    setSettings((current) =>
+      normalizeProjectSettings({
+        ...createDefaultProjectSettings(),
+        aiProvider: current.aiProvider,
+        network: current.network,
+        orientation: current.orientation,
+        variantCount: current.variantCount,
+        storeRoutingMode: current.storeRoutingMode,
+        storePlatform: current.storePlatform,
+        storeUrl: current.storeUrl,
+        appStoreUrl: current.appStoreUrl,
+        googlePlayUrl: current.googlePlayUrl,
+        name: 'Bản clone playable',
+        prompt: '',
+      }),
+    );
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }, []);
 
   useEffect(() => {
     if (!analysis?.documentHtml) {
@@ -511,55 +541,42 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
           </div>
           <div>
             <strong>Tái tạo playable</strong>
-            <span>Tính năng bổ sung, không ảnh hưởng luồng chỉnh sửa cũ</span>
+            <span>Clone từ HTML nguồn</span>
           </div>
         </div>
 
         <section className="sidebar-section workspace-scope-section">
-          <div className="section-head">
-            <span>Tính năng</span>
-            <b>3</b>
+          <div className="editor-sidebar-actions">
+            <Link href="/" className="secondary-button">
+              <ArrowLeft size={15} />
+              Home
+            </Link>
+            <Link href={`/apps/${appId}`} className="secondary-button">
+              <WandSparkles size={15} />
+              Mở editor
+            </Link>
+            <button className="primary-button editor-primary-action" type="button" onClick={resetCloneWorkspace}>
+              <RefreshCw size={15} />
+              Phiên mới
+            </button>
           </div>
-          <div className="sidebar-feature-menu">
-            <Link href="/" className="sidebar-feature-item">
-              <span className="sidebar-feature-icon">
-                <Grid2X2 size={16} />
+          <div className="workspace-scope-card editor-context-card">
+            <div className="editor-context-head">
+              <div>
+                <strong>{settings.name || 'Bản clone playable'}</strong>
+                <small>{analysis ? analysis.name : 'Chưa nhập playable nguồn'}</small>
+              </div>
+              <span className={`workspace-scope-status ${analysis ? 'saved' : 'idle'}`}>
+                {analysis ? 'Đã phân tích' : 'Chờ HTML'}
               </span>
-              <span className="sidebar-feature-copy">
-                <strong>Tổng quan</strong>
-                <small>Màn hình chính cho toàn bộ ứng dụng</small>
-              </span>
-            </Link>
-            <Link href={`/apps/${appId}`} className="sidebar-feature-item">
-              <span className="sidebar-feature-icon">
-                <WandSparkles size={16} />
-              </span>
-              <span className="sidebar-feature-copy">
-                <strong>Trình chỉnh sửa</strong>
-                <small>Khu chỉnh sửa chính của ứng dụng này</small>
-              </span>
-            </Link>
-            <Link href={`/apps/${appId}/clone`} className="sidebar-feature-item active">
-              <span className="sidebar-feature-icon">
-                <FileCode2 size={16} />
-              </span>
-              <span className="sidebar-feature-copy">
-                <strong>Tái tạo playable</strong>
-                <small>Dựng lại từ playable HTML nguồn</small>
-              </span>
-            </Link>
+            </div>
+            <div className="editor-context-chips">
+              <span className="editor-context-chip">{cloneSourceLabel}</span>
+              <span className="editor-context-chip soft">{variants.length ? `${variants.length} biến thể` : 'Chưa có biến thể'}</span>
+              <span className="editor-context-chip soft">{networkLabels[settings.network]}</span>
+            </div>
           </div>
         </section>
-
-        <Link href={`/apps/${appId}?new=1`} className="secondary-button wide">
-          <RefreshCw size={15} />
-          Project mới
-        </Link>
-
-        <div className="status-strip">
-          <StatusPill icon={<FileCode2 size={14} />} label={analysis ? 'HTML sẵn sàng' : 'HTML'} ready={Boolean(analysis)} />
-          <StatusPill icon={<Sparkles size={14} />} label={variants.length ? `${variants.length} biến thể` : 'Biến thể'} ready={Boolean(variants.length)} />
-        </div>
 
         <button className="upload-zone" type="button" onClick={() => fileInputRef.current?.click()}>
           <Upload size={22} />
@@ -587,7 +604,7 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
             <input value={settings.name} onChange={(event) => setProjectSetting('name', event.target.value)} />
           </label>
           <label className="field">
-            <span>Prompt</span>
+            <span>Mô tả</span>
             <textarea
               rows={8}
               value={settings.prompt}
@@ -680,9 +697,6 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
             <span>Thao tác</span>
             <b>{variants.length ? `${variants.length * networkExportTargets.length}` : '0'}</b>
           </div>
-          <p className="section-note clone-action-note">
-            Xem trước đang dùng {networkLabels[settings.network]}. Khi xuất sẽ đóng gói đủ {networkExportTargets.length} network cho mỗi playable.
-          </p>
           <div className="action-grid clone-action-grid">
             <button className="primary-button" type="button" onClick={generateCloneBatch} disabled={!analysis || Boolean(busy)}>
               {busy === 'generate' ? <Loader2 className="spin" size={16} /> : <WandSparkles size={16} />}
@@ -843,9 +857,14 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
 
       <section className="workspace">
         <div className="workspace-top">
-          <div>
-            <span className="eyebrow">Không gian clone</span>
+          <div className="workspace-top-main">
+            <span className="eyebrow">Clone</span>
             <h1>{settings.name || 'Bản clone playable'}</h1>
+            <div className="workspace-summary-strip">
+              <span className="workspace-summary-pill">{cloneSourceLabel}</span>
+              <span className="workspace-summary-pill soft">{networkLabels[settings.network]}</span>
+              <span className="workspace-summary-pill soft">{variants.length ? `${variants.length} biến thể` : 'Chưa có biến thể'}</span>
+            </div>
           </div>
         </div>
 
@@ -919,7 +938,7 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
       <aside className="inspector clone-inspector">
         <div className="inspector-head">
           <div>
-            <span className="eyebrow">Bảng điều khiển</span>
+            <span className="eyebrow">Phân tích</span>
             <h2>{selectedVariant ? `Biến thể ${selectedVariant.index}` : 'Phân tích nguồn'}</h2>
           </div>
         </div>
@@ -991,18 +1010,6 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
       </aside>
     </main>
   );
-}
-
-function StatusPill({
-  icon,
-  label,
-  ready,
-}: {
-  icon: ReactNode;
-  label: string;
-  ready: boolean;
-}) {
-  return <span className={`status-pill ${ready ? 'ready' : ''}`}>{icon}{label}</span>;
 }
 
 function NoticeBanner({ notice }: { notice: Exclude<Notice, null> }) {

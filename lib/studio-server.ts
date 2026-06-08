@@ -6,6 +6,7 @@ import type {
   PlayableVariant,
   ProjectSettings,
   StudioAppSummary,
+  StudioEditorContextPayload,
   StudioDashboardPayload,
   StudioProjectDetail,
   StudioProjectGalleryItem,
@@ -128,8 +129,16 @@ export async function getDashboardPayload(ctx: StudioRequestContext): Promise<St
 
 export async function getProjectGalleryPayload(ctx: StudioRequestContext): Promise<StudioProjectGalleryPayload> {
   const workspaces = await getAccessibleWorkspaceRows(ctx);
-  const apps = await listAppsForWorkspaces(ctx.supabase, workspaces.map((workspace) => workspace.id));
-  const projects = await listProjectRowsForWorkspaces(ctx.supabase, workspaces.map((workspace) => workspace.id));
+  const workspaceIds = workspaces.map((workspace) => workspace.id);
+  const [apps, projects] = await Promise.all([
+    listAppsForWorkspaces(ctx.supabase, workspaceIds),
+    listProjectRowsForWorkspaces(
+      ctx.supabase,
+      workspaceIds,
+      'id,name,workspace_id,app_id,owner_user_id,owner_email,created_at,updated_at',
+      { renderableOnly: true },
+    ),
+  ]);
   const workspaceMap = new Map(workspaces.map((workspace) => [workspace.id, workspace]));
   const appMap = new Map(apps.map((app) => [app.id, app]));
 
@@ -148,8 +157,6 @@ export async function getProjectGalleryPayload(ctx: StudioRequestContext): Promi
         workspaceName: String(workspace.name || 'Workspace'),
         ownerUserId: String(project.owner_user_id),
         ownerEmail: String(project.owner_email || ''),
-        variantCount: Array.isArray(project.variants) ? project.variants.length : 0,
-        orientation: resolveProjectOrientation(project.settings),
         createdAt: String(project.created_at),
         updatedAt: String(project.updated_at),
       } satisfies StudioProjectGalleryItem,
@@ -218,6 +225,47 @@ export async function deleteAppRecord(ctx: StudioRequestContext, appId: string) 
 
   const { error: deleteAppError } = await ctx.supabase.from('playable_apps').delete().eq('id', app.id);
   if (deleteAppError) throw deleteAppError;
+}
+
+export async function getEditorContextPayload(ctx: StudioRequestContext, appId: string): Promise<StudioEditorContextPayload> {
+  const app = await assertAppAccess(ctx, appId);
+  const { data: workspaceData, error: workspaceError } = await ctx.supabase
+    .from('playable_workspaces')
+    .select('id,name')
+    .eq('id', app.workspace_id)
+    .maybeSingle();
+  if (workspaceError) throw workspaceError;
+  if (!workspaceData) throw new Error('Workspace not found.');
+
+  const role = await getWorkspaceUserRole(ctx, app.workspace_id);
+  if (role === 'none') throw new Error('You do not have access to this workspace.');
+
+  return {
+    user: {
+      id: ctx.user.id,
+      email: ctx.profile.email,
+      displayName: ctx.profile.display_name,
+      role: ctx.profile.role,
+    },
+    workspace: {
+      id: String(workspaceData.id),
+      name: String(workspaceData.name),
+      memberRole: role === 'owner' ? 'manager' : role,
+    },
+    app: {
+      id: app.id,
+      workspaceId: app.workspace_id,
+      name: app.name,
+      slug: app.slug,
+      accentColor: app.accent_color,
+      projectCount: 0,
+      myProjectCount: 0,
+      updatedTodayCount: 0,
+      lastUpdatedAt: app.updated_at || null,
+      createdAt: app.created_at,
+      updatedAt: app.updated_at,
+    },
+  };
 }
 
 export async function listProjectsForApp(ctx: StudioRequestContext, appId: string): Promise<StudioProjectSummary[]> {
@@ -351,13 +399,10 @@ export async function saveProjectRecord(ctx: StudioRequestContext, body: Record<
     updated_at: now,
   };
 
-  if (existing) {
-    const { error } = await ctx.supabase.from('playable_projects').update(projectPayload).eq('id', projectId);
-    if (error) throw error;
-  } else {
-    const { error } = await ctx.supabase.from('playable_projects').insert({ ...projectPayload, created_at: now });
-    if (error) throw error;
-  }
+  const { error } = await ctx.supabase
+    .from('playable_projects')
+    .upsert({ ...projectPayload, created_at: existing?.created_at || now }, { onConflict: 'id' });
+  if (error) throw error;
 
   return projectId;
 }
@@ -542,13 +587,15 @@ async function getAccessibleWorkspaceRows(ctx: StudioRequestContext): Promise<Wo
       .order('updated_at', { ascending: false })).data as WorkspaceRow[]) || []);
   }
 
-  const owned =
-    ((await ctx.supabase
+  const [ownedResponse, membershipResponse] = await Promise.all([
+    ctx.supabase
       .from('playable_workspaces')
       .select('id,name,slug,owner_user_id,created_at,updated_at')
-      .eq('owner_user_id', ctx.user.id)).data as WorkspaceRow[]) || [];
-  const membershipIds =
-    ((await ctx.supabase.from('playable_workspace_members').select('workspace_id').eq('user_id', ctx.user.id)).data as Array<{ workspace_id: string }>) || [];
+      .eq('owner_user_id', ctx.user.id),
+    ctx.supabase.from('playable_workspace_members').select('workspace_id').eq('user_id', ctx.user.id),
+  ]);
+  const owned = (ownedResponse.data as WorkspaceRow[]) || [];
+  const membershipIds = (membershipResponse.data as Array<{ workspace_id: string }>) || [];
   const extraIds = membershipIds.map((row) => row.workspace_id).filter((id) => !owned.some((workspace) => workspace.id === id));
   if (!extraIds.length) return owned.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
 
@@ -575,11 +622,15 @@ async function listProjectRowsForWorkspaces(
   supabase: AdminClient,
   workspaceIds: string[],
   columns = 'id,name,workspace_id,app_id,owner_user_id,owner_email,variants,settings,created_at,updated_at',
+  options: { renderableOnly?: boolean } = {},
 ) {
   if (!workspaceIds.length) return [];
+  let query = supabase.from('playable_projects').select(columns).in('workspace_id', workspaceIds).order('updated_at', { ascending: false });
+  if (options.renderableOnly) {
+    query = query.or('source_image_path.not.is.null,variants.not.eq.[]');
+  }
   return (
-    ((await supabase.from('playable_projects').select(columns).in('workspace_id', workspaceIds).order('updated_at', { ascending: false }))
-      .data as unknown as ProjectRow[]) || []
+    ((await query).data as unknown as ProjectRow[]) || []
   );
 }
 

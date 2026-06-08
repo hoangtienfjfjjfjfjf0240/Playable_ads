@@ -4,8 +4,15 @@ import { AnimatePresence, motion } from 'motion/react';
 import {
   Activity,
   AlertCircle,
+  AlignHorizontalJustifyCenter,
+  AlignHorizontalJustifyEnd,
+  AlignHorizontalJustifyStart,
+  AlignVerticalJustifyCenter,
+  AlignVerticalJustifyEnd,
+  AlignVerticalJustifyStart,
   Archive,
   ArrowDown,
+  ArrowLeft,
   ArrowUp,
   CheckCircle2,
   Crosshair,
@@ -85,12 +92,9 @@ import type {
   ScanStyle,
   SourceItem,
   StudioAppSummary,
-  StudioDashboardPayload,
+  StudioEditorContextPayload,
   StudioProjectDetail,
-  StudioProjectSummary,
   StudioCloneImportPayload,
-  StudioUserSummary,
-  StudioWorkspaceSummary,
 } from '../lib/types';
 
 type HealthState = {
@@ -307,6 +311,14 @@ const layerMeta: Record<LayerTarget, { label: string; group: string }> = {
   asset: { label: 'Hiệu ứng', group: 'Hiển thị' },
   cta: { label: 'CTA', group: 'Hành động' },
   text: { label: 'Chữ nhắc', group: 'Lời nhắc' },
+};
+const toolbarLayerMeta: Record<LayerTarget, string> = {
+  image: 'IMAGE',
+  hand: 'HAND',
+  scan: 'SCAN',
+  asset: 'FX',
+  cta: 'CTA',
+  text: 'TEXT',
 };
 const layerPickerTargets: LayerTarget[] = ['image', 'hand', 'scan', 'cta', 'text'];
 const storeTargetMeta: Record<
@@ -582,6 +594,9 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
   const cloneImportCheckedRef = useRef(false);
   const freshProjectHandledRef = useRef(false);
   const projectQueryHandledRef = useRef('');
+  const currentProjectIdRef = useRef('');
+  const pendingProjectIdRef = useRef('');
+  const saveRequestRef = useRef<Promise<string | null> | null>(null);
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSavedSnapshotRef = useRef('');
   const draftBaselineSnapshotRef = useRef('');
@@ -593,12 +608,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
   const [session, setSession] = useState<Session | null>(null);
   const [sessionLoading, setSessionLoading] = useState(Boolean(appId));
   const [authToken, setAuthToken] = useState('');
-  const [studioUser, setStudioUser] = useState<StudioUserSummary | null>(null);
-  const [studioWorkspace, setStudioWorkspace] = useState<StudioWorkspaceSummary | null>(null);
   const [studioApp, setStudioApp] = useState<StudioAppSummary | null>(null);
-  const [savedProjects, setSavedProjects] = useState<StudioProjectSummary[]>([]);
-  const [savedProjectsLoading, setSavedProjectsLoading] = useState(Boolean(appId));
-  const [deletingProjectId, setDeletingProjectId] = useState('');
   const [currentProjectId, setCurrentProjectId] = useState('');
   const [settings, setSettings] = useState<ProjectSettings>(() => normalizeProjectSettings(createDefaultProjectSettings()));
   const [sources, setSources] = useState<SourceItem[]>([]);
@@ -659,6 +669,16 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         : visualAssets.filter((asset) => asset.category === 'scan'),
     [assetLibraryTab],
   );
+  const activeSourceLabel = activeSource ? (activeSource.kind === 'image' ? 'Ảnh nguồn' : 'HTML playable') : 'Chưa có nguồn';
+  const toolbarLayerLabel = toolbarLayerMeta[selectedLayer];
+  const alignPanelItems = [
+    { command: 'left', title: 'Align left', Icon: AlignHorizontalJustifyStart },
+    { command: 'center', title: 'Align horizontal center', Icon: AlignHorizontalJustifyCenter },
+    { command: 'right', title: 'Align right', Icon: AlignHorizontalJustifyEnd },
+    { command: 'top', title: 'Align top', Icon: AlignVerticalJustifyStart },
+    { command: 'middle', title: 'Align vertical center', Icon: AlignVerticalJustifyCenter },
+    { command: 'bottom', title: 'Align bottom', Icon: AlignVerticalJustifyEnd },
+  ] as const;
   const assetLibraryCount =
     assetLibraryTab === 'hand' ? handAssets.length : assetLibraryTab === 'button' ? buttonAssets.length : visibleVisualAssets.length;
   const appScopedEditor = Boolean(appId);
@@ -677,12 +697,13 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
       variants,
     });
   }, [activeSource?.dataUrl, appId, appScopedEditor, currentProjectId, settings, variants]);
-  const hasPersistableProject = Boolean(
-    appScopedEditor &&
-      appId &&
-      (Boolean(currentProjectId) || Boolean(activeSource?.dataUrl) || Boolean(variants.length) || autosaveSnapshot !== draftBaselineSnapshotRef.current),
-  );
+  const hasProjectContent = Boolean(activeSource?.dataUrl || variants.length);
+  const hasPersistableProject = Boolean(appScopedEditor && appId && hasProjectContent);
   const hasUnsavedProjectChanges = Boolean(autosaveSnapshot && autosaveSnapshot !== lastSavedSnapshotRef.current);
+
+  useEffect(() => {
+    currentProjectIdRef.current = currentProjectId;
+  }, [currentProjectId]);
 
   useEffect(() => {
     if (!appScopedEditor) {
@@ -718,7 +739,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
 
   const fetchEditorContext = useCallback(async () => {
     if (!appScopedEditor || !authToken) return;
-    const response = await fetch('/api/auth/me', {
+    const response = await fetch(`/api/apps/${encodeURIComponent(appId)}`, {
       headers: {
         Authorization: `Bearer ${authToken}`,
       },
@@ -727,32 +748,10 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(typeof payload?.error === 'string' ? payload.error : 'Không tải được ngữ cảnh editor.');
 
-    const dashboard = payload as StudioDashboardPayload;
-    const workspace = dashboard.workspaces.find((item) => item.apps.some((app) => app.id === appId)) || null;
-    const app = workspace?.apps.find((item) => item.id === appId) || null;
-    if (!workspace || !app) throw new Error('Không tìm thấy ứng dụng trong không gian của bạn.');
+    const editorContext = payload as StudioEditorContextPayload;
+    if (!editorContext.workspace || !editorContext.app) throw new Error('Không tìm thấy ứng dụng trong không gian của bạn.');
 
-    setStudioUser(dashboard.user);
-    setStudioWorkspace(workspace);
-    setStudioApp(app);
-  }, [appId, appScopedEditor, authToken]);
-
-  const fetchSavedProjects = useCallback(async () => {
-    if (!appScopedEditor || !authToken) return;
-    setSavedProjectsLoading(true);
-    try {
-      const response = await fetch(`/api/projects?appId=${encodeURIComponent(appId)}`, {
-        headers: {
-          Authorization: `Bearer ${authToken}`,
-        },
-        cache: 'no-store',
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(typeof payload?.error === 'string' ? payload.error : 'Không tải được danh sách project.');
-      setSavedProjects(Array.isArray(payload.projects) ? (payload.projects as StudioProjectSummary[]) : []);
-    } finally {
-      setSavedProjectsLoading(false);
-    }
+    setStudioApp(editorContext.app);
   }, [appId, appScopedEditor, authToken]);
 
   useEffect(() => {
@@ -760,10 +759,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
     fetchEditorContext().catch((error) => {
       setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Không tải được ngữ cảnh ứng dụng.' });
     });
-    fetchSavedProjects().catch((error) => {
-      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Không tải được project.' });
-    });
-  }, [appScopedEditor, authToken, fetchEditorContext, fetchSavedProjects]);
+  }, [appScopedEditor, authToken, fetchEditorContext]);
 
   useEffect(() => {
     if (!appScopedEditor || !studioApp || currentProjectId || sources.length || variants.length) return;
@@ -771,13 +767,13 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
       if (!shouldUseGeneratedProjectName(current.name, studioApp.name)) return current;
       return {
         ...current,
-        name: requestedProjectName.trim() || buildDateProjectName(),
+        name: requestedProjectName.trim() || studioApp.name || 'Untitled Project',
       };
     });
   }, [appScopedEditor, currentProjectId, requestedProjectName, sources.length, studioApp, variants.length]);
 
   useEffect(() => {
-    if (!appScopedEditor || !appId || currentProjectId || activeSource?.dataUrl || variants.length || draftBaselineSnapshotRef.current) return;
+    if (!appScopedEditor || !appId || !studioApp || currentProjectId || activeSource?.dataUrl || variants.length || draftBaselineSnapshotRef.current) return;
     if (studioApp && !shouldUseGeneratedProjectName(settings.name, studioApp.name)) return;
     if (!autosaveSnapshot) return;
     draftBaselineSnapshotRef.current = autosaveSnapshot;
@@ -808,6 +804,8 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
       } satisfies SourceItem;
 
       setCurrentProjectId('');
+      currentProjectIdRef.current = '';
+      pendingProjectIdRef.current = '';
       setSettings(normalizeProjectSettings(payload.settings || createDefaultProjectSettings()));
       setSources([source]);
       setActiveSourceId(source.id);
@@ -906,31 +904,6 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
     setSettings((current) => ({ ...current, [key]: value }));
   };
 
-  const syncSavedProjectSummary = useCallback(
-    (projectId: string) => {
-      if (!appScopedEditor || !projectId) return;
-      const nowIso = new Date().toISOString();
-      setSavedProjects((current) => {
-        const existing = current.find((project) => project.id === projectId);
-        const summary: StudioProjectSummary = {
-          id: projectId,
-          name: settings.name,
-          workspaceId: studioWorkspace?.id || existing?.workspaceId || '',
-          appId: appId || existing?.appId || '',
-          ownerUserId: studioUser?.id || existing?.ownerUserId || '',
-          ownerEmail: studioUser?.email || existing?.ownerEmail || '',
-          variantCount: variants.length,
-          createdAt: existing?.createdAt || nowIso,
-          updatedAt: nowIso,
-        };
-        return [summary, ...current.filter((project) => project.id !== projectId)].sort((left, right) =>
-          right.updatedAt.localeCompare(left.updatedAt),
-        );
-      });
-    },
-    [appId, appScopedEditor, settings.name, studioUser, studioWorkspace, variants.length],
-  );
-
   const saveProject = useCallback(
     async ({ silent = false, force = false }: { silent?: boolean; force?: boolean } = {}) => {
       if (appScopedEditor && (!authToken || !appId)) {
@@ -941,9 +914,14 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         if (!silent) setNotice({ tone: 'error', text: 'Chưa có project hợp lệ để lưu.' });
         return null;
       }
+      if (!hasProjectContent) {
+        if (!silent) setNotice({ tone: 'warn', text: 'Thêm ảnh nguồn hoặc biến thể trước khi lưu project.' });
+        return null;
+      }
 
+      const stableProjectId = currentProjectIdRef.current || pendingProjectIdRef.current || '';
       const snapshot = buildProjectAutosaveSnapshot({
-        projectId: currentProjectId || '',
+        projectId: stableProjectId,
         appId: appId || '',
         name: settings.name,
         prompt: settings.prompt,
@@ -952,7 +930,12 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         variants,
       });
       if (!force && snapshot === lastSavedSnapshotRef.current) {
-        return currentProjectId || null;
+        return stableProjectId || null;
+      }
+
+      if (saveRequestRef.current) {
+        pendingPersistRef.current = true;
+        return saveRequestRef.current;
       }
 
       if (autosaveTimerRef.current) {
@@ -960,6 +943,8 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         autosaveTimerRef.current = null;
       }
 
+      const resolvedProjectId = stableProjectId || crypto.randomUUID();
+      pendingProjectIdRef.current = resolvedProjectId;
       setProjectSaving(true);
       setAutosaveError('');
       if (silent) {
@@ -969,14 +954,14 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         setNotice({ tone: 'busy', text: 'Đang lưu Supabase' });
       }
 
-      try {
+      const request = (async () => {
         const headers: Record<string, string> = { 'Content-Type': 'application/json' };
         if (authToken) headers.Authorization = `Bearer ${authToken}`;
         const response = await fetch('/api/projects', {
           method: 'POST',
           headers,
           body: JSON.stringify({
-            id: currentProjectId || undefined,
+            id: resolvedProjectId,
             appId: appId || undefined,
             name: settings.name,
             prompt: settings.prompt,
@@ -988,8 +973,10 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(payload.error || 'Supabase save failed');
 
-        const savedId = typeof payload.id === 'string' ? payload.id : currentProjectId || '';
+        const savedId = typeof payload.id === 'string' ? payload.id : resolvedProjectId;
         if (savedId) {
+          currentProjectIdRef.current = savedId;
+          pendingProjectIdRef.current = savedId;
           setCurrentProjectId(savedId);
           lastSavedSnapshotRef.current = buildProjectAutosaveSnapshot({
             projectId: savedId,
@@ -1000,7 +987,6 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
             sourceImageDataUrl: activeSource?.dataUrl || '',
             variants,
           });
-          syncSavedProjectSummary(savedId);
         }
         setAutosaveState('saved');
         setLastSavedAt(Date.now());
@@ -1008,23 +994,33 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
           setNotice({ tone: 'ok', text: `Đã lưu project ${savedId || payload.id}` });
         }
         return savedId || null;
+      })();
+
+      saveRequestRef.current = request;
+
+      try {
+        return await request;
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Lưu thất bại';
+        if (!currentProjectIdRef.current) {
+          pendingProjectIdRef.current = '';
+        }
         setAutosaveState('error');
         setAutosaveError(message);
         setNotice({ tone: 'error', text: message });
         return null;
       } finally {
+        saveRequestRef.current = null;
         setProjectSaving(false);
         if (!silent) setBusy(false);
       }
     },
-    [activeSource?.dataUrl, appId, appScopedEditor, authToken, currentProjectId, settings, syncSavedProjectSummary, variants],
+    [activeSource?.dataUrl, appId, appScopedEditor, authToken, hasProjectContent, settings, variants],
   );
 
   const resetCurrentProject = useCallback((nextProjectName?: string) => {
     const baseSettings = normalizeProjectSettings(createDefaultProjectSettings());
-    const projectName = nextProjectName?.trim() || buildDateProjectName();
+    const projectName = nextProjectName?.trim() || studioApp?.name || 'Untitled Project';
     const baselineSnapshot = buildProjectAutosaveSnapshot({
       projectId: '',
       appId: appId || '',
@@ -1043,6 +1039,8 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
     setAutosaveState('idle');
     setAutosaveError('');
     setLastSavedAt(null);
+    currentProjectIdRef.current = '';
+    pendingProjectIdRef.current = '';
     setCurrentProjectId('');
     setSettings({
       ...baseSettings,
@@ -1053,45 +1051,8 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
     setVariants([]);
     setSelectedVariantId('');
     setSelectedLayer('hand');
-    setNotice({ tone: 'ok', text: 'Đã tạo project mới trong ứng dụng hiện tại.' });
-  }, [appId]);
-
-  const deleteSavedProject = useCallback(
-    async (project: StudioProjectSummary) => {
-      if (!authToken) {
-        setNotice({ tone: 'error', text: 'Cần đăng nhập để thao tác.' });
-        return;
-      }
-
-      const confirmed = window.confirm(
-        `Xóa project "${project.name}"${project.variantCount ? ` và ${project.variantCount} biến thể đã lưu` : ''}?`,
-      );
-      if (!confirmed) return;
-
-      setDeletingProjectId(project.id);
-      try {
-        const response = await fetch(`/api/projects/${project.id}`, {
-          method: 'DELETE',
-          headers: {
-            Authorization: `Bearer ${authToken}`,
-          },
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(typeof payload?.error === 'string' ? payload.error : 'Không xóa được project.');
-
-        if (currentProjectId === project.id) {
-          resetCurrentProject();
-        }
-        await fetchSavedProjects();
-        setNotice({ tone: 'ok', text: `Đã xóa project ${project.name}.` });
-      } catch (error) {
-        setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Không xóa được project.' });
-      } finally {
-        setDeletingProjectId('');
-      }
-    },
-    [authToken, currentProjectId, fetchSavedProjects, resetCurrentProject],
-  );
+    setNotice({ tone: 'ok', text: 'Đã mở một project mới trong editor hiện tại.' });
+  }, [appId, studioApp?.name]);
 
   useEffect(() => {
     if (!appScopedEditor || !wantsFreshProject || freshProjectHandledRef.current) return;
@@ -1132,10 +1093,6 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
     [currentProjectId, hasPersistableProject, hasUnsavedProjectChanges, router, saveProject, supabase],
   );
 
-  const signOutEditor = useCallback(() => {
-    void leaveEditor('/', { signOut: true });
-  }, [leaveEditor]);
-
   const loadSavedProject = useCallback(
     async (projectId: string) => {
       if (!authToken) {
@@ -1172,6 +1129,8 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
           : null;
 
         setCurrentProjectId(project.id);
+        currentProjectIdRef.current = project.id;
+        pendingProjectIdRef.current = project.id;
         setSettings(normalizeProjectSettings(project.settings || createDefaultProjectSettings()));
         setSources(sourceItem ? [sourceItem] : []);
         setActiveSourceId(sourceItem?.id || '');
@@ -1215,7 +1174,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
   );
 
   useEffect(() => {
-    if (!appScopedEditor || !requestedProjectId || !authToken || !studioApp) return;
+    if (!appScopedEditor || !requestedProjectId || !authToken) return;
     if (currentProjectId === requestedProjectId || projectQueryHandledRef.current === requestedProjectId) return;
 
     projectQueryHandledRef.current = requestedProjectId;
@@ -1229,10 +1188,10 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
       .catch(() => {
         projectQueryHandledRef.current = '';
       });
-  }, [appScopedEditor, authToken, currentProjectId, loadSavedProject, requestedProjectId, studioApp]);
+  }, [appScopedEditor, authToken, currentProjectId, loadSavedProject, requestedProjectId]);
 
   useEffect(() => {
-    if (!appScopedEditor || !authToken || !appId || !autosaveSnapshot || busy || projectSaving) return;
+    if (!appScopedEditor || !authToken || !appId || !studioApp || !autosaveSnapshot || busy || projectSaving) return;
     if (autosaveSnapshot === lastSavedSnapshotRef.current) return;
     if (!currentProjectId && autosaveSnapshot === draftBaselineSnapshotRef.current) return;
 
@@ -1247,12 +1206,12 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         autosaveTimerRef.current = null;
       }
     };
-  }, [appId, appScopedEditor, authToken, autosaveSnapshot, busy, currentProjectId, projectSaving, saveProject]);
+  }, [appId, appScopedEditor, authToken, autosaveSnapshot, busy, currentProjectId, projectSaving, saveProject, studioApp]);
 
   useEffect(() => {
     if (!pendingPersistRef.current || busy || projectSaving || !hasPersistableProject) return;
     pendingPersistRef.current = false;
-    void saveProject({ silent: true, force: true });
+    void saveProject({ silent: true });
   }, [busy, hasPersistableProject, projectSaving, saveProject]);
 
   useEffect(() => {
@@ -1846,12 +1805,13 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
 
   const applyVisualAsset = (assetId: string) => {
     const asset = getVisualAsset(assetId);
-    if (asset.id === 'scan-frame-box') {
+    const scanLibraryPreset = getScanLibraryPreset(asset.id);
+    if (scanLibraryPreset) {
       setSelectedLayer('scan');
       updateLayer(
         {
-          scanStyle: 'frame',
-          scanAnimationName: 'Frame Scan',
+          scanStyle: scanLibraryPreset.scanStyle,
+          scanAnimationName: getScanAnimationLabel(scanLibraryPreset.scanStyle),
           scanColor: layerForControls.scanColor || '#7c3cff',
           injectScan: true,
           layerOrder: ensureLayerInOrder(getLayerOrder(activeLayer), 'scan'),
@@ -1859,7 +1819,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         undefined,
         'scan',
       );
-      setNotice({ tone: 'ok', text: 'Đã áp dụng Frame Scan' });
+      setNotice({ tone: 'ok', text: `Đã áp dụng ${scanLibraryPreset.label}` });
       return;
     }
 
@@ -2165,7 +2125,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         <AlertCircle size={18} />
         <span>Trình chỉnh sửa này yêu cầu đăng nhập Supabase.</span>
         <Link href="/" className="secondary-button">
-          Quay lại tổng quan
+          Quay lại home
         </Link>
       </main>
     );
@@ -2180,97 +2140,23 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
           </div>
           <div>
             <strong>Playable Studio</strong>
-            <span>Trình chỉnh sửa AI theo lô</span>
+            <span>Editor theo app</span>
           </div>
         </div>
 
         {appScopedEditor ? (
           <section className="sidebar-section workspace-scope-section">
-            <div className="section-head">
-              <span>Tính năng</span>
-              <b>3</b>
-            </div>
-            <div className="sidebar-feature-menu">
-              <button type="button" className="sidebar-feature-item" onClick={() => void leaveEditor('/')}>
-                <span className="sidebar-feature-icon">
-                  <Grid2X2 size={16} />
-                </span>
-                <span className="sidebar-feature-copy">
-                  <strong>Tổng quan</strong>
-                  <small>Màn hình chính cho toàn bộ ứng dụng</small>
-                </span>
+            <div className="editor-sidebar-actions">
+              <button type="button" className="secondary-button" onClick={() => void leaveEditor('/')}>
+                <ArrowLeft size={15} />
+                Home
               </button>
-              <Link href={`/apps/${appId}`} className="sidebar-feature-item active">
-                <span className="sidebar-feature-icon">
-                  <WandSparkles size={16} />
-                </span>
-                <span className="sidebar-feature-copy">
-                  <strong>Trình chỉnh sửa</strong>
-                  <small>Khu chỉnh sửa chính của ứng dụng này</small>
-                </span>
-              </Link>
-              <button type="button" className="sidebar-feature-item" onClick={() => void leaveEditor(`/apps/${appId}/clone`)}>
-                <span className="sidebar-feature-icon">
-                  <FileCode2 size={16} />
-                </span>
-                <span className="sidebar-feature-copy">
-                  <strong>Tái tạo playable</strong>
-                  <small>Dựng lại từ playable HTML nguồn</small>
-                </span>
+              <button type="button" className="secondary-button" onClick={() => void leaveEditor(`/apps/${appId}/clone`)}>
+                <FileCode2 size={15} />
+                Clone playable
               </button>
             </div>
-            <button className="secondary-button wide" type="button" onClick={() => resetCurrentProject()}>
-              <RefreshCw size={15} />
-              Project mới
-            </button>
-            <div className="workspace-scope-card">
-              <div>
-                <strong>{studioApp?.name || 'Đang tải ứng dụng...'}</strong>
-                <small>{studioWorkspace ? `${studioWorkspace.name} · ${studioWorkspace.memberRole}` : 'Đang tải không gian'}</small>
-              </div>
-            </div>
-            <div className="project-list">
-              {savedProjectsLoading ? (
-                <div className="empty-note">Đang tải project...</div>
-              ) : savedProjects.length ? (
-                savedProjects.map((project) => (
-                  <div key={project.id} className={`project-row ${project.id === currentProjectId ? 'active' : ''}`}>
-                    <button type="button" className="project-row-main" onClick={() => loadSavedProject(project.id)}>
-                      <span className="project-row-leading">
-                        <span className="source-icon">
-                          <Save size={15} />
-                        </span>
-                        <span className="project-row-copy">
-                          <strong>{getProjectListDisplayName(project.name, project.createdAt)}</strong>
-                          <span className="project-row-meta">
-                            <span>{formatProjectVariantCount(project.variantCount)}</span>
-                            <span>{formatProjectListUpdatedAt(project.updatedAt)}</span>
-                          </span>
-                        </span>
-                      </span>
-                      {project.id === currentProjectId ? (
-                        <span className="project-row-badge">
-                          Đang mở
-                        </span>
-                      ) : null}
-                    </button>
-                    {studioUser && (studioUser.role === 'manager' || studioWorkspace?.memberRole === 'manager' || project.ownerUserId === studioUser.id) ? (
-                      <button
-                        className="ghost-button slim project-row-delete"
-                        type="button"
-                        onClick={() => void deleteSavedProject(project)}
-                        disabled={deletingProjectId === project.id}
-                        title={`Xóa ${getProjectListDisplayName(project.name, project.createdAt)}`}
-                      >
-                        {deletingProjectId === project.id ? <Loader2 className="spin" size={14} /> : <Trash2 size={14} />}
-                      </button>
-                    ) : null}
-                  </div>
-                ))
-              ) : (
-                <div className="empty-note">Ứng dụng này chưa có project nào.</div>
-              )}
-            </div>
+
           </section>
         ) : null}
 
@@ -2439,68 +2325,77 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
             </div>
           ) : (
             <div className="asset-grid asset-library-grid">
-              {visibleVisualAssets.map((asset) => (
-                <button
-                  key={asset.id}
-                  type="button"
-                  draggable
-                  className={`asset-tile ${layerForControls.assetId === asset.id ? 'active' : ''}`}
-                  onDragStart={(event) => {
-                    if (asset.id === 'scan-frame-box') {
-                      setLayerDragData(event, 'scan');
-                      setSelectedLayer('scan');
-                      updateLayer(
-                        {
-                          scanStyle: 'frame',
-                          scanAnimationName: 'Frame Scan',
-                          injectScan: true,
-                          layerOrder: ensureLayerInOrder(getLayerOrder(activeLayer), 'scan'),
-                        },
-                        undefined,
-                        'scan',
-                      );
-                      return;
-                    }
-                    setLayerDragData(event, 'asset', asset.id);
-                  }}
-                  onClick={() => applyVisualAsset(asset.id)}
-                  title={`${asset.label} - ${asset.note}`}
-                >
-                  <VisualAssetIcon assetId={asset.id} loopPreview />
-                  <strong>{asset.label}</strong>
-                  <small>{asset.note}</small>
-                </button>
-              ))}
+              {visibleVisualAssets.map((asset) => {
+                const scanLibraryPreset = getScanLibraryPreset(asset.id);
+                const isActive = scanLibraryPreset
+                  ? layerForControls.injectScan && layerForControls.scanStyle === scanLibraryPreset.scanStyle
+                  : layerForControls.assetId === asset.id;
+
+                return (
+                  <button
+                    key={asset.id}
+                    type="button"
+                    draggable
+                    className={`asset-tile ${isActive ? 'active' : ''}`}
+                    onDragStart={(event) => {
+                      if (scanLibraryPreset) {
+                        setLayerDragData(event, 'scan');
+                        setSelectedLayer('scan');
+                        updateLayer(
+                          {
+                            scanStyle: scanLibraryPreset.scanStyle,
+                            scanAnimationName: getScanAnimationLabel(scanLibraryPreset.scanStyle),
+                            injectScan: true,
+                            layerOrder: ensureLayerInOrder(getLayerOrder(activeLayer), 'scan'),
+                          },
+                          undefined,
+                          'scan',
+                        );
+                        return;
+                      }
+                      setLayerDragData(event, 'asset', asset.id);
+                    }}
+                    onClick={() => applyVisualAsset(asset.id)}
+                    title={`${asset.label} - ${asset.note}`}
+                  >
+                    <VisualAssetIcon assetId={asset.id} loopPreview />
+                    <strong>{asset.label}</strong>
+                    <small>{asset.note}</small>
+                  </button>
+                );
+              })}
             </div>
           )}
         </section>
       </aside>
 
       <section className="workspace">
-        <header className="workspace-top">
-          <div>
-            <span className="eyebrow">{appScopedEditor ? studioWorkspace?.name || 'Không gian' : 'Không gian'}</span>
-            <h1>{settings.name || 'Lô playable'}</h1>
-            {appScopedEditor ? <p className="workspace-context-note">{studioApp?.name || 'Ứng dụng hiện tại'} · Trình chỉnh sửa dự án</p> : null}
-          </div>
-          <div className="workspace-top-side">
-            {appScopedEditor ? (
-              <div className="workspace-account-bar">
-                <div className="workspace-account-copy">
-                  <strong>{studioUser?.displayName || studioUser?.email || 'Đã đăng nhập'}</strong>
-                  <span>
-                    {studioUser?.email || 'Chưa có email'}
-                    {studioWorkspace?.memberRole ? ` · ${studioWorkspace.memberRole}` : ''}
-                  </span>
-                </div>
-                <button className="ghost-button slim workspace-signout-button" type="button" onClick={signOutEditor}>
-                  Đăng xuất
-                </button>
+        <header className={`workspace-top ${appScopedEditor ? 'toolbar-only' : ''}`}>
+          {appScopedEditor ? (
+            <div className="workspace-top-main">
+              <label className="workspace-title-field">
+                <span className="eyebrow">Tên project</span>
+                <input
+                  value={settings.name}
+                  onChange={(event) => setProjectSetting('name', event.target.value)}
+                  placeholder={studioApp?.name || 'Nhập tên project'}
+                />
+              </label>
+            </div>
+          ) : (
+            <div className="workspace-top-main">
+              <span className="eyebrow">Playable Studio</span>
+              <h1>{settings.name || 'Untitled'}</h1>
+              <div className="workspace-summary-strip">
+                <span className="workspace-summary-pill">{activeSourceLabel}</span>
+                <span className="workspace-summary-pill soft">{variants.length ? `${variants.length} biến thể` : 'Chưa có biến thể'}</span>
               </div>
-            ) : null}
+            </div>
+          )}
+          <div className="workspace-top-side">
             <div className="toolbar">
               <label className="batch-count-control" title={`1-${MAX_VARIANT_COUNT} variants`}>
-                <span>Lô</span>
+                <span>Count</span>
                 <input
                   type="number"
                   min={1}
@@ -2511,56 +2406,55 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
               </label>
               <button className="ghost-button" type="button" onClick={cloneSourceToVariants} disabled={!activeSource || busy}>
                 <Grid2X2 size={16} />
-                Nháp x{targetVariantCount}
+                Draft x{targetVariantCount}
               </button>
-              <div className="fit-toggle" role="group" aria-label="Chế độ khung ảnh">
+              <div className="fit-toggle" role="group" aria-label="Frame fit mode">
                 <button
                   className={activeImageFit === 'cover' ? 'active' : ''}
                   type="button"
                   onClick={() => setProjectSetting('imageFit', 'cover')}
-                  title="Phủ đầy khung 9:16 mà không méo ảnh"
+                  title="Fill the 9:16 frame without distortion"
                 >
                   <Maximize2 size={14} />
-                  Phủ
+                  Fill
                 </button>
                 <button
                   className={activeImageFit === 'contain' ? 'active' : ''}
                   type="button"
                   onClick={() => setProjectSetting('imageFit', 'contain')}
-                  title="Hiện trọn ảnh mà không cắt"
+                  title="Show the full image without cropping"
                 >
                   <Minimize2 size={14} />
-                  Vừa
+                  Fit
                 </button>
               </div>
-              <div className="align-toolbar" role="group" aria-label={`Căn ${selectedLayerMeta.label}`}>
-                <span className="align-toolbar-label">{selectedLayerMeta.label}</span>
-                <button type="button" onClick={() => alignSelectedLayer('left')} disabled={!canAlignSelectedLayer} title="Căn trái">
-                  L
-                </button>
-                <button type="button" onClick={() => alignSelectedLayer('center')} disabled={!canAlignSelectedLayer} title="Căn giữa ngang">
-                  C
-                </button>
-                <button type="button" onClick={() => alignSelectedLayer('right')} disabled={!canAlignSelectedLayer} title="Căn phải">
-                  R
-                </button>
-                <button type="button" onClick={() => alignSelectedLayer('top')} disabled={!canAlignSelectedLayer} title="Căn trên">
-                  T
-                </button>
-                <button type="button" onClick={() => alignSelectedLayer('middle')} disabled={!canAlignSelectedLayer} title="Căn giữa dọc">
-                  M
-                </button>
-                <button type="button" onClick={() => alignSelectedLayer('bottom')} disabled={!canAlignSelectedLayer} title="Căn dưới">
-                  B
-                </button>
+              <div className="align-panel" role="group" aria-label={`Align ${toolbarLayerLabel}`}>
+                <div className="align-panel-head">
+                  <span className="align-panel-title">Align</span>
+                  <strong>{toolbarLayerLabel}</strong>
+                </div>
+                <div className="align-panel-grid">
+                  {alignPanelItems.map(({ command, title, Icon }) => (
+                    <button
+                      key={command}
+                      type="button"
+                      onClick={() => alignSelectedLayer(command)}
+                      disabled={!canAlignSelectedLayer}
+                      title={title}
+                      aria-label={title}
+                    >
+                      <Icon size={14} />
+                    </button>
+                  ))}
+                </div>
               </div>
               <button className="secondary-button" type="button" onClick={detectAllVariants} disabled={!variants.length || busy}>
                 <Crosshair size={16} />
-                Tự lên plan
+                Auto plan
               </button>
               <button className="primary-button" type="button" onClick={generateVariants} disabled={!activeSource || activeSource.kind !== 'image' || busy || !activeAiReady}>
                 {busy ? <Loader2 className="spin" size={16} /> : <WandSparkles size={16} />}
-                Tạo {targetVariantCount}
+                Create {targetVariantCount}
               </button>
             </div>
           </div>
@@ -2679,7 +2573,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
       <aside className="inspector">
         <div className="inspector-head">
           <div>
-            <span className="eyebrow">Bảng điều khiển</span>
+            <span className="eyebrow">Thiết lập</span>
             <h2>{selectedVariant ? `Biến thể ${selectedVariant.index}` : activeSource?.kind === 'html' ? 'Bản vá HTML' : 'Cài đặt'}</h2>
           </div>
           <Settings2 size={18} />
@@ -2687,19 +2581,11 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
 
         <section className="panel-section">
           <label className="field">
-            <span>Tên project</span>
-            <input value={settings.name} onChange={(event) => setProjectSetting('name', event.target.value)} />
-          </label>
-          <p className="field-help">Đổi tên project tại đây. Tên này sẽ được tự lưu lên Supabase và cũng có thể lưu tay bằng nút `Lưu`.</p>
-          <label className="field">
-            <span>Prompt</span>
+            <span>Mô tả</span>
             <textarea rows={5} value={settings.prompt} onChange={(event) => setProjectSetting('prompt', event.target.value)} />
           </label>
           <div className="section-title compact">
-            <div className="section-title-copy">
-              <h3>Liên kết store</h3>
-              <p className="section-note">Xuất một đích đến hoặc tự điều hướng theo thiết bị.</p>
-            </div>
+            <h3>Liên kết store</h3>
             <span>{storeRoutingMeta[settings.storeRoutingMode].label}</span>
           </div>
           <div className="store-routing-grid">
@@ -2769,10 +2655,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
             </div>
           )}
           <div className="section-title compact">
-            <div className="section-title-copy">
-              <h3>Đầu ra</h3>
-              <p className="section-note">Thiết lập network xem trước, tỷ lệ và nhà cung cấp AI cho batch hiện tại.</p>
-            </div>
+            <h3>Đầu ra</h3>
           </div>
           <label className="field">
             <span>Mô hình AI</span>
@@ -2803,10 +2686,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
             </label>
           </div>
           <div className="section-title compact">
-            <div className="section-title-copy">
-              <h3>Thiết lập batch</h3>
-              <p className="section-note">Đồng bộ layer, lập plan AI và xử lý click cho toàn bộ biến thể đã tạo.</p>
-            </div>
+            <h3>Thiết lập batch</h3>
           </div>
           <label className="check-row">
             <input
@@ -2832,10 +2712,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
 
         <section className="panel-section">
           <div className="section-title">
-            <div className="section-title-copy">
-              <h3>Thứ tự layer</h3>
-              <p className="section-note">Thứ tự render từ trên xuống dưới của biến thể đang chọn.</p>
-            </div>
+            <h3>Thứ tự layer</h3>
             <span>{layerStackSummary}</span>
           </div>
           <LayerStack
@@ -2854,10 +2731,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
 
         <section className="panel-section">
           <div className="section-title">
-            <div className="section-title-copy">
-              <h3>Chỉnh layer</h3>
-              <p className="section-note">Chọn layer, sau đó kéo trực tiếp trên preview hoặc tinh chỉnh các giá trị bên dưới.</p>
-            </div>
+            <h3>Chỉnh layer</h3>
             <span>{selectedLayerMeta.label}</span>
           </div>
           <div className="layer-status-row">
@@ -3240,7 +3114,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
               <Archive size={16} />
               {`ZIP x${variants.length * networkExportTargets.length}`}
             </button>
-            <button className="primary-button wide" type="button" onClick={() => void saveProject({ force: true })} disabled={busy || projectSaving || !appScopedEditor || !appId}>
+            <button className="primary-button wide" type="button" onClick={() => void saveProject({ force: true })} disabled={busy || projectSaving || !appScopedEditor || !appId || !hasProjectContent}>
               <Save size={16} />
               {projectSaving ? 'Đang lưu...' : 'Lưu'}
             </button>
@@ -3689,10 +3563,6 @@ function PreviewCard({
 
   return (
     <motion.article layout className={`preview-card ${selected ? 'selected' : ''}`} style={{ aspectRatio: ratio }} onClick={onSelect}>
-      <div className="preview-card-head">
-        <span>Biến thể {variant.index}</span>
-        <b>{Math.round(variant.hotspot.confidence * 100)}%</b>
-      </div>
       <div className="preview-stage">
         <div
           ref={frameRef}
@@ -3907,6 +3777,17 @@ function getScanAnimationLabel(scanStyle: ScanStyle) {
     none: 'None',
   };
   return labels[scanStyle];
+}
+
+function getScanLibraryPreset(assetId: string): { scanStyle: ScanStyle; label: string } | null {
+  const presetMap: Record<string, { scanStyle: ScanStyle; label: string }> = {
+    'scan-frame-box': { scanStyle: 'frame', label: 'Frame Scan' },
+    'scan-beam': { scanStyle: 'sweep', label: 'Sweep Line' },
+    'scan-vertical-beam': { scanStyle: 'border', label: 'Border Scan' },
+    'scan-reticle': { scanStyle: 'face', label: 'Face Scan' },
+    'scan-radar-sweep': { scanStyle: 'ring', label: 'Pulse Ring' },
+  };
+  return presetMap[assetId] || null;
 }
 
 function normalizeHexColor(value?: string, fallback = '#7c3cff') {
@@ -4367,6 +4248,7 @@ function shouldUseGeneratedProjectName(currentName: string, appName?: string) {
   if (!normalized) return true;
   if (normalized === 'playable batch' || normalized === 'playable project') return true;
   if (appName && normalized === `${appName} project`.trim().toLowerCase()) return true;
+  if (/^project \d{4}-\d{2}-\d{2} \d{2}-\d{2}$/.test(normalized)) return true;
   return false;
 }
 
@@ -4407,40 +4289,6 @@ function buildProjectAutosaveSnapshot({
   });
 }
 
-function getProjectListDisplayName(name: string, createdAt: string) {
-  const normalized = name.trim();
-  const match = normalized.match(/^Project (\d{4})-(\d{2})-(\d{2}) (\d{2})-(\d{2})$/i);
-  if (match) {
-    const [, , month, day, hour, minute] = match;
-    return `Project ${day}/${month} · ${hour}:${minute}`;
-  }
-
-  if (!normalized || /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(normalized)) {
-    const fallback = formatProjectListUpdatedAt(createdAt);
-    return fallback === '--' ? 'Project chưa đặt tên' : `Project ${fallback}`;
-  }
-
-  return normalized;
-}
-
-function formatProjectVariantCount(value: number) {
-  if (value <= 0) return 'Chưa có biến thể';
-  return value === 1 ? '1 biến thể' : `${value} biến thể`;
-}
-
-function formatProjectListUpdatedAt(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '--';
-
-  const now = new Date();
-  const isSameDay =
-    date.getFullYear() === now.getFullYear() &&
-    date.getMonth() === now.getMonth() &&
-    date.getDate() === now.getDate();
-
-  return new Intl.DateTimeFormat('vi-VN', isSameDay ? { hour: '2-digit', minute: '2-digit' } : { day: '2-digit', month: '2-digit' }).format(date);
-}
-
 function formatProjectSaveTime(value: number) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '--:--';
@@ -4450,12 +4298,6 @@ function formatProjectSaveTime(value: number) {
     second: '2-digit',
   }).format(date);
 }
-
-
-
-
-
-
 
 
 

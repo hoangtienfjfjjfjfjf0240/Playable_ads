@@ -283,10 +283,17 @@ export interface StudioProjectSummary {
   updatedAt: string;
 }
 
-export interface StudioProjectGalleryItem extends StudioProjectSummary {
+export interface StudioProjectGalleryItem {
+  id: string;
+  name: string;
+  workspaceId: string;
+  appId: string;
+  ownerUserId: string;
+  ownerEmail: string;
+  createdAt: string;
+  updatedAt: string;
   appName: string;
   workspaceName: string;
-  orientation: Orientation;
 }
 
 export interface StudioAppSummary {
@@ -326,6 +333,12 @@ export interface StudioDashboardPayload {
     myProjectCount: number;
   };
   workspaces: StudioWorkspaceSummary[];
+}
+
+export interface StudioEditorContextPayload {
+  user: StudioUserSummary;
+  workspace: Pick<StudioWorkspaceSummary, 'id' | 'name' | 'memberRole'>;
+  app: StudioAppSummary;
 }
 
 export interface StudioProjectGalleryPayload {

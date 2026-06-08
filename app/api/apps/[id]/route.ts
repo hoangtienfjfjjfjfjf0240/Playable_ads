@@ -1,9 +1,22 @@
 import { NextResponse } from 'next/server';
-import { deleteAppRecord, getDashboardPayload, requireStudioUser } from '../../../../lib/studio-server';
+import { deleteAppRecord, getDashboardPayload, getEditorContextPayload, requireStudioUser } from '../../../../lib/studio-server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
+
+export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const ctx = await requireStudioUser(request);
+    const { id } = await params;
+    const payload = await getEditorContextPayload(ctx, id);
+    return NextResponse.json(payload);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Cannot load editor context.';
+    const status = /auth|session/i.test(message) ? 401 : /not found/i.test(message) ? 404 : 400;
+    return NextResponse.json({ error: message }, { status });
+  }
+}
 
 export async function DELETE(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
