@@ -179,6 +179,7 @@ function buildAnalyzerPrompt({
     'If the campaign prompt explicitly gives cue text or CTA copy, preserve that wording verbatim instead of inventing a generic replacement.',
     'Return cue as a short on-screen instruction, separate from the CTA button. Examples: "Tap to view", "Swipe to explore", "Drag to compare", "Press and hold". Do not duplicate the CTA button text inside cue.',
     'Choose cue.animation from the registry. Use pulse or float for tap, float for swipe, bounce for drag, breath for hold, shake for scratch or urgent reveal.',
+    'If the campaign prompt explicitly asks for a scan style such as face scan, sweep line, ripple, ring, spotlight, border, frame, or spark, preserve that request in scanStyle instead of defaulting to frame.',
     'Only use scan-frame-box as a scan visual asset. Do not choose reticle, grid, beam, barcode, food card, calorie chip, or other scan asset IDs.',
     'Place target coordinates in normalized 0-100 values at the object or UI element the user should interact with. If the prompt asks to scan a product, put the target directly on that product area so the scan frame can sit there.',
     'Keep CTA in the lower safe area unless the image clearly reserves another clean area.',

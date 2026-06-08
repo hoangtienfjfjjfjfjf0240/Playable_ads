@@ -318,6 +318,7 @@ export function heuristicPlanFromHotspot(hotspot: Hotspot, index = 1, prompt = '
   const intent = inferIntent(hotspot, prompt, index);
   const defaults = intentDefaults[intent];
   const handMotion = inferHandMotion(prompt, defaults.handMotion);
+  const scanStyle = resolvePromptScanStyle(intent, prompt, defaults.scanStyle);
   const target = targetFromHotspot(hotspot);
   const ctaY = target.y > 78 ? 90 : 88;
 
@@ -328,7 +329,7 @@ export function heuristicPlanFromHotspot(hotspot: Hotspot, index = 1, prompt = '
       target,
       recipeId: defaults.recipeId,
       handMotion,
-      scanStyle: defaults.scanStyle,
+      scanStyle,
       visualAssetId: defaults.visualAssetId,
       cta: {
         text: ctaTextForIntent(intent, prompt, defaults.ctaText),
@@ -368,7 +369,7 @@ export function normalizePlayablePlan(raw: unknown, hotspot: Hotspot, index = 1,
   const recipeId = recipePresets.some((recipe) => recipe.id === plan.recipeId) ? plan.recipeId : defaults.recipeId;
   const visualAssetId = visualAssets.some((asset) => asset.id === plan.visualAssetId) ? plan.visualAssetId : defaults.visualAssetId;
   const buttonId = buttonAssets.some((button) => button.id === plan.cta.buttonId) ? plan.cta.buttonId : defaults.buttonId;
-  const scanStyle: ScanStyle = plan.intent === 'cta_only' || plan.scanStyle === 'none' ? 'none' : 'frame';
+  const scanStyle = resolvePromptScanStyle(plan.intent, prompt, plan.scanStyle || defaults.scanStyle);
 
   return {
     ...plan,
@@ -406,9 +407,10 @@ export function layerFromPlayablePlan(plan: PlayablePlan, prompt = ''): LayerSet
   const recipe = recipePresets.find((item) => item.id === plan.recipeId) || recipePresets.find((item) => item.id === defaults.recipeId);
   const button = getButtonAsset(plan.cta.buttonId);
   const target = normalizeTarget(plan.target);
-  const ctaOnly = plan.intent === 'cta_only' || plan.confidence < 0.45;
-  const scanFocused = !ctaOnly && shouldInjectScanLayer(plan, prompt);
-  const scanStyle = ctaOnly ? 'none' : plan.scanStyle;
+  const explicitScanRequested = hasExplicitScanDirective(prompt);
+  const ctaOnly = (plan.intent === 'cta_only' || plan.confidence < 0.45) && !explicitScanRequested;
+  const scanFocused = shouldInjectScanLayer(plan, prompt);
+  const scanStyle = scanFocused ? plan.scanStyle : 'none';
   const scanSize = Math.round(clampNumber(Math.max(target.width, target.height) * 4.4, 108, 226));
   const handX = ctaOnly
     ? clampNumber(plan.cta.x + 15, 12, 92)
@@ -438,6 +440,8 @@ export function layerFromPlayablePlan(plan: PlayablePlan, prompt = ''): LayerSet
     scanSize: recipe?.layer.scanSize || scanSize,
     scanSpeed: recipe?.layer.scanSpeed || plan.timing.actionDurationMs,
     scanDelay: plan.timing.introDelayMs,
+    scanLoop: inferScanLoop(prompt, recipe?.layer.scanLoop || defaultLayerSettings.scanLoop),
+    scanAutoplay: scanFocused,
     injectScan: scanFocused,
     ctaText: plan.cta.text,
     ctaX: plan.cta.x,
@@ -485,6 +489,7 @@ function heuristicPlanFromHotspotFallback(hotspot: Hotspot, index: number, promp
   const intent = inferIntent(hotspot, prompt, index);
   const defaults = intentDefaults[intent];
   const handMotion = inferHandMotion(prompt, defaults.handMotion);
+  const scanStyle = resolvePromptScanStyle(intent, prompt, defaults.scanStyle);
   const target = targetFromHotspot(hotspot);
   return {
     intent,
@@ -492,7 +497,7 @@ function heuristicPlanFromHotspotFallback(hotspot: Hotspot, index: number, promp
     target,
     recipeId: defaults.recipeId,
     handMotion,
-    scanStyle: defaults.scanStyle,
+    scanStyle,
     visualAssetId: defaults.visualAssetId,
     cta: {
       text: ctaTextForIntent(intent, prompt, defaults.ctaText),
@@ -670,12 +675,42 @@ function cueYForCta(ctaY: number) {
 
 function shouldInjectScanLayer(plan: PlayablePlan, prompt: string) {
   if (plan.intent === 'scan_object') return true;
+  if (hasExplicitScanDirective(prompt)) return true;
   return plan.intent === 'count_result' && hasScanWords(prompt);
 }
 
 function hasScanWords(prompt: string) {
   const value = normalizeText(prompt);
   return /(scan|camera|photo|detect|measure|heart|bpm|cardio|calorie|food|meal|face|barcode|qr|receipt|quet|nhan dien|do nhip tim|do calo)/.test(value);
+}
+
+function hasExplicitScanDirective(prompt: string) {
+  const value = normalizeText(prompt);
+  return /(scan face|face scan|scan animation|animation scan|scan effect|scan loop|tap to scan|quet|nhan dien|scan icon|icon scan)/.test(value);
+}
+
+function resolvePromptScanStyle(intent: PlayableIntent, prompt: string, fallback: ScanStyle): ScanStyle {
+  const value = normalizeText(prompt);
+  if (/(without scan|no scan|scan none|khong scan|khong can scan|bo scan)/.test(value)) return 'none';
+  if (/(scan face|face scan|face id|quet mat|nhan dien khuon mat)/.test(value)) return 'face';
+  if (/(scan sweep|sweep line|beam scan|laser scan|scan line|quet ngang|tia quet)/.test(value)) return 'sweep';
+  if (/(scan ripple|ripple|lan song|song tron)/.test(value)) return 'ripple';
+  if (/(scan ring|pulse ring|ring pulse|vong song|vong quet)/.test(value)) return 'ring';
+  if (/(scan spotlight|spotlight|focus glow|quang chom)/.test(value)) return 'spotlight';
+  if (/(scan border|border scan|vien scan|khung vien)/.test(value)) return 'border';
+  if (/(scan spark|spark hit|flash scan|nhay sang scan)/.test(value)) return 'spark';
+  if (/(scan frame|frame scan|box scan|khung scan)/.test(value)) return 'frame';
+  if (intent === 'cta_only') return 'none';
+  if (hasExplicitScanDirective(prompt) && fallback !== 'none') return fallback;
+  return fallback;
+}
+
+function inferScanLoop(prompt: string, fallback: LayerSettings['scanLoop']) {
+  const value = normalizeText(prompt);
+  if (/(once|one shot|mot lan)/.test(value)) return 'once';
+  if (/(ping pong|pingpong|back and forth|len xuong lien tuc|qua lai)/.test(value)) return 'pingpong';
+  if (/(continuous|continually|loop|infinite|lien tuc|lap lai|chay mai)/.test(value)) return 'loop';
+  return fallback;
 }
 
 function extractPromptCueText(prompt: string) {

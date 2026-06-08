@@ -283,6 +283,12 @@ export interface StudioProjectSummary {
   updatedAt: string;
 }
 
+export interface StudioProjectGalleryItem extends StudioProjectSummary {
+  appName: string;
+  workspaceName: string;
+  orientation: Orientation;
+}
+
 export interface StudioAppSummary {
   id: string;
   workspaceId: string;
@@ -320,6 +326,12 @@ export interface StudioDashboardPayload {
     myProjectCount: number;
   };
   workspaces: StudioWorkspaceSummary[];
+}
+
+export interface StudioProjectGalleryPayload {
+  user: StudioUserSummary;
+  defaultAppId: string | null;
+  projects: StudioProjectGalleryItem[];
 }
 
 export interface StudioProjectDetail {

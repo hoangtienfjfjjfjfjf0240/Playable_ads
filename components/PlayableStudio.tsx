@@ -44,7 +44,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import type JSZip from 'jszip';
 import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import {
   createDefaultProjectSettings,
   defaultProjectPrompt,
@@ -581,7 +581,13 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
   const handDataUrlCache = useRef(new Map<string, string>());
   const cloneImportCheckedRef = useRef(false);
   const freshProjectHandledRef = useRef(false);
+  const projectQueryHandledRef = useRef('');
+  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastSavedSnapshotRef = useRef('');
+  const draftBaselineSnapshotRef = useRef('');
+  const pendingPersistRef = useRef(false);
   const supabase = useMemo(() => getSupabaseBrowser(), []);
+  const router = useRouter();
   const searchParams = useSearchParams();
   const [health, setHealth] = useState<HealthState>(null);
   const [session, setSession] = useState<Session | null>(null);
@@ -604,6 +610,10 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
   const [selectedLayer, setSelectedLayer] = useState<LayerTarget>('hand');
   const [notice, setNotice] = useState<Notice>({ tone: 'warn', text: 'Chưa có ảnh nguồn' });
   const [busy, setBusy] = useState(false);
+  const [projectSaving, setProjectSaving] = useState(false);
+  const [autosaveState, setAutosaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [autosaveError, setAutosaveError] = useState('');
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   const [paused, setPaused] = useState(false);
   const [aiWorkers, setAiWorkers] = useState<AiWorkerStatus[]>(() => createWorkerStatuses(DEFAULT_VARIANT_COUNT, 'idle'));
   const [lastAiDuration, setLastAiDuration] = useState<number | null>(null);
@@ -652,6 +662,27 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
   const assetLibraryCount =
     assetLibraryTab === 'hand' ? handAssets.length : assetLibraryTab === 'button' ? buttonAssets.length : visibleVisualAssets.length;
   const appScopedEditor = Boolean(appId);
+  const requestedProjectId = searchParams?.get('projectId') || '';
+  const requestedProjectName = searchParams?.get('name') || '';
+  const wantsFreshProject = searchParams?.get('new') === '1';
+  const autosaveSnapshot = useMemo(() => {
+    if (!appScopedEditor || !appId) return '';
+    return buildProjectAutosaveSnapshot({
+      projectId: currentProjectId || '',
+      appId,
+      name: settings.name,
+      prompt: settings.prompt,
+      settings,
+      sourceImageDataUrl: activeSource?.dataUrl || '',
+      variants,
+    });
+  }, [activeSource?.dataUrl, appId, appScopedEditor, currentProjectId, settings, variants]);
+  const hasPersistableProject = Boolean(
+    appScopedEditor &&
+      appId &&
+      (Boolean(currentProjectId) || Boolean(activeSource?.dataUrl) || Boolean(variants.length) || autosaveSnapshot !== draftBaselineSnapshotRef.current),
+  );
+  const hasUnsavedProjectChanges = Boolean(autosaveSnapshot && autosaveSnapshot !== lastSavedSnapshotRef.current);
 
   useEffect(() => {
     if (!appScopedEditor) {
@@ -736,11 +767,25 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
 
   useEffect(() => {
     if (!appScopedEditor || !studioApp || currentProjectId || sources.length || variants.length) return;
-    setSettings((current) => ({
-      ...current,
-      name: current.name && current.name !== 'Playable batch' ? current.name : `${studioApp.name} project`,
-    }));
-  }, [appScopedEditor, currentProjectId, sources.length, studioApp, variants.length]);
+    setSettings((current) => {
+      if (!shouldUseGeneratedProjectName(current.name, studioApp.name)) return current;
+      return {
+        ...current,
+        name: requestedProjectName.trim() || buildDateProjectName(),
+      };
+    });
+  }, [appScopedEditor, currentProjectId, requestedProjectName, sources.length, studioApp, variants.length]);
+
+  useEffect(() => {
+    if (!appScopedEditor || !appId || currentProjectId || activeSource?.dataUrl || variants.length || draftBaselineSnapshotRef.current) return;
+    if (studioApp && !shouldUseGeneratedProjectName(settings.name, studioApp.name)) return;
+    if (!autosaveSnapshot) return;
+    draftBaselineSnapshotRef.current = autosaveSnapshot;
+  }, [activeSource?.dataUrl, appId, appScopedEditor, autosaveSnapshot, currentProjectId, settings.name, studioApp, variants.length]);
+
+  const markProjectForPersist = useCallback(() => {
+    pendingPersistRef.current = true;
+  }, []);
 
   useEffect(() => {
     if (!appScopedEditor || !appId || currentProjectId || sources.length || variants.length || cloneImportCheckedRef.current) return;
@@ -776,13 +821,19 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         })),
       );
       setSelectedVariantId(payload.variants[0]?.id || '');
+      markProjectForPersist();
       setSelectedLayer('hand');
       setHtmlLayerSettings(normalizeLayerSettings(defaultLayerSettings));
+      lastSavedSnapshotRef.current = '';
+      draftBaselineSnapshotRef.current = '';
+      setAutosaveState('idle');
+      setAutosaveError('');
+      setLastSavedAt(null);
       setNotice({ tone: 'ok', text: `Đã nhập ${payload.variants.length} biến thể clone từ Clone Playable.` });
     } catch (error) {
       setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Cannot import clone payload.' });
     }
-  }, [appId, appScopedEditor, currentProjectId, sources.length, variants.length]);
+  }, [appId, appScopedEditor, currentProjectId, markProjectForPersist, sources.length, variants.length]);
 
   useEffect(() => {
     if (busy) return;
@@ -855,12 +906,147 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
     setSettings((current) => ({ ...current, [key]: value }));
   };
 
-  const resetCurrentProject = useCallback(() => {
+  const syncSavedProjectSummary = useCallback(
+    (projectId: string) => {
+      if (!appScopedEditor || !projectId) return;
+      const nowIso = new Date().toISOString();
+      setSavedProjects((current) => {
+        const existing = current.find((project) => project.id === projectId);
+        const summary: StudioProjectSummary = {
+          id: projectId,
+          name: settings.name,
+          workspaceId: studioWorkspace?.id || existing?.workspaceId || '',
+          appId: appId || existing?.appId || '',
+          ownerUserId: studioUser?.id || existing?.ownerUserId || '',
+          ownerEmail: studioUser?.email || existing?.ownerEmail || '',
+          variantCount: variants.length,
+          createdAt: existing?.createdAt || nowIso,
+          updatedAt: nowIso,
+        };
+        return [summary, ...current.filter((project) => project.id !== projectId)].sort((left, right) =>
+          right.updatedAt.localeCompare(left.updatedAt),
+        );
+      });
+    },
+    [appId, appScopedEditor, settings.name, studioUser, studioWorkspace, variants.length],
+  );
+
+  const saveProject = useCallback(
+    async ({ silent = false, force = false }: { silent?: boolean; force?: boolean } = {}) => {
+      if (appScopedEditor && (!authToken || !appId)) {
+        if (!silent) setNotice({ tone: 'error', text: 'Bạn chưa đăng nhập hoặc chưa chọn app.' });
+        return null;
+      }
+      if (!appScopedEditor || !appId) {
+        if (!silent) setNotice({ tone: 'error', text: 'Chưa có project hợp lệ để lưu.' });
+        return null;
+      }
+
+      const snapshot = buildProjectAutosaveSnapshot({
+        projectId: currentProjectId || '',
+        appId: appId || '',
+        name: settings.name,
+        prompt: settings.prompt,
+        settings,
+        sourceImageDataUrl: activeSource?.dataUrl || '',
+        variants,
+      });
+      if (!force && snapshot === lastSavedSnapshotRef.current) {
+        return currentProjectId || null;
+      }
+
+      if (autosaveTimerRef.current) {
+        clearTimeout(autosaveTimerRef.current);
+        autosaveTimerRef.current = null;
+      }
+
+      setProjectSaving(true);
+      setAutosaveError('');
+      if (silent) {
+        setAutosaveState('saving');
+      } else {
+        setBusy(true);
+        setNotice({ tone: 'busy', text: 'Đang lưu Supabase' });
+      }
+
+      try {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (authToken) headers.Authorization = `Bearer ${authToken}`;
+        const response = await fetch('/api/projects', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            id: currentProjectId || undefined,
+            appId: appId || undefined,
+            name: settings.name,
+            prompt: settings.prompt,
+            settings,
+            sourceImageDataUrl: activeSource?.dataUrl || '',
+            variants,
+          }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || 'Supabase save failed');
+
+        const savedId = typeof payload.id === 'string' ? payload.id : currentProjectId || '';
+        if (savedId) {
+          setCurrentProjectId(savedId);
+          lastSavedSnapshotRef.current = buildProjectAutosaveSnapshot({
+            projectId: savedId,
+            appId: appId || '',
+            name: settings.name,
+            prompt: settings.prompt,
+            settings,
+            sourceImageDataUrl: activeSource?.dataUrl || '',
+            variants,
+          });
+          syncSavedProjectSummary(savedId);
+        }
+        setAutosaveState('saved');
+        setLastSavedAt(Date.now());
+        if (!silent) {
+          setNotice({ tone: 'ok', text: `Đã lưu project ${savedId || payload.id}` });
+        }
+        return savedId || null;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Lưu thất bại';
+        setAutosaveState('error');
+        setAutosaveError(message);
+        setNotice({ tone: 'error', text: message });
+        return null;
+      } finally {
+        setProjectSaving(false);
+        if (!silent) setBusy(false);
+      }
+    },
+    [activeSource?.dataUrl, appId, appScopedEditor, authToken, currentProjectId, settings, syncSavedProjectSummary, variants],
+  );
+
+  const resetCurrentProject = useCallback((nextProjectName?: string) => {
     const baseSettings = normalizeProjectSettings(createDefaultProjectSettings());
+    const projectName = nextProjectName?.trim() || buildDateProjectName();
+    const baselineSnapshot = buildProjectAutosaveSnapshot({
+      projectId: '',
+      appId: appId || '',
+      name: projectName,
+      prompt: baseSettings.prompt,
+      settings: {
+        ...baseSettings,
+        name: projectName,
+      },
+      sourceImageDataUrl: '',
+      variants: [],
+    });
+    lastSavedSnapshotRef.current = '';
+    draftBaselineSnapshotRef.current = baselineSnapshot;
+    pendingPersistRef.current = false;
+    setAutosaveState('idle');
+    setAutosaveError('');
+    setLastSavedAt(null);
     setCurrentProjectId('');
     setSettings({
       ...baseSettings,
-      name: studioApp ? `${studioApp.name} project` : baseSettings.name,
+      name: projectName,
     });
     setSources([]);
     setActiveSourceId('');
@@ -868,7 +1054,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
     setSelectedVariantId('');
     setSelectedLayer('hand');
     setNotice({ tone: 'ok', text: 'Đã tạo project mới trong ứng dụng hiện tại.' });
-  }, [studioApp]);
+  }, [appId]);
 
   const deleteSavedProject = useCallback(
     async (project: StudioProjectSummary) => {
@@ -908,24 +1094,47 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
   );
 
   useEffect(() => {
-    const wantsFreshProject = searchParams?.get('new') === '1';
-    if (!appScopedEditor || !wantsFreshProject || freshProjectHandledRef.current || !studioApp) return;
+    if (!appScopedEditor || !wantsFreshProject || freshProjectHandledRef.current) return;
 
     freshProjectHandledRef.current = true;
-    resetCurrentProject();
+    resetCurrentProject(requestedProjectName);
 
     if (typeof window !== 'undefined') {
       const url = new URL(window.location.href);
       url.searchParams.delete('new');
+      url.searchParams.delete('name');
       window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
     }
-  }, [appScopedEditor, resetCurrentProject, searchParams, studioApp]);
+  }, [appScopedEditor, requestedProjectName, resetCurrentProject, wantsFreshProject]);
 
-  const signOutEditor = useCallback(async () => {
-    if (!supabase) return;
-    await supabase.auth.signOut();
-    window.location.href = '/';
-  }, [supabase]);
+  const leaveEditor = useCallback(
+    async (href: string, options?: { signOut?: boolean }) => {
+      if (hasPersistableProject && hasUnsavedProjectChanges) {
+        const savedId = await saveProject({ force: true });
+        if (!savedId && !currentProjectId) return;
+      }
+
+      if (options?.signOut) {
+        if (!supabase) return;
+        await supabase.auth.signOut();
+        window.location.href = href;
+        return;
+      }
+
+      if (typeof window !== 'undefined' && href === '/') {
+        window.sessionStorage.setItem('playable-dashboard-refresh', String(Date.now()));
+        window.location.assign(href);
+        return;
+      }
+
+      router.push(href);
+    },
+    [currentProjectId, hasPersistableProject, hasUnsavedProjectChanges, router, saveProject, supabase],
+  );
+
+  const signOutEditor = useCallback(() => {
+    void leaveEditor('/', { signOut: true });
+  }, [leaveEditor]);
 
   const loadSavedProject = useCallback(
     async (projectId: string) => {
@@ -976,6 +1185,25 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
           })),
         );
         setSelectedVariantId(project.variants[0]?.id || '');
+        lastSavedSnapshotRef.current = buildProjectAutosaveSnapshot({
+          projectId: project.id,
+          appId: project.appId,
+          name: project.settings?.name || project.name,
+          prompt: project.prompt,
+          settings: normalizeProjectSettings(project.settings || createDefaultProjectSettings()),
+          sourceImageDataUrl: sourceItem?.dataUrl || '',
+          variants: project.variants.map((variant) => ({
+            ...variant,
+            sourceId,
+            hotspot: variant.hotspot || { x: 50, y: 72, confidence: 0.28 },
+            settings: normalizeLayerSettings(variant.settings),
+          })),
+        });
+        draftBaselineSnapshotRef.current = lastSavedSnapshotRef.current;
+        pendingPersistRef.current = false;
+        setAutosaveState('saved');
+        setAutosaveError('');
+        setLastSavedAt(Date.parse(project.updatedAt) || Date.now());
         setNotice({ tone: 'ok', text: `Đã mở project ${project.name}` });
       } catch (error) {
         setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Không mở được project.' });
@@ -985,6 +1213,61 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
     },
     [authToken],
   );
+
+  useEffect(() => {
+    if (!appScopedEditor || !requestedProjectId || !authToken || !studioApp) return;
+    if (currentProjectId === requestedProjectId || projectQueryHandledRef.current === requestedProjectId) return;
+
+    projectQueryHandledRef.current = requestedProjectId;
+    loadSavedProject(requestedProjectId)
+      .then(() => {
+        if (typeof window === 'undefined') return;
+        const url = new URL(window.location.href);
+        url.searchParams.delete('projectId');
+        window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+      })
+      .catch(() => {
+        projectQueryHandledRef.current = '';
+      });
+  }, [appScopedEditor, authToken, currentProjectId, loadSavedProject, requestedProjectId, studioApp]);
+
+  useEffect(() => {
+    if (!appScopedEditor || !authToken || !appId || !autosaveSnapshot || busy || projectSaving) return;
+    if (autosaveSnapshot === lastSavedSnapshotRef.current) return;
+    if (!currentProjectId && autosaveSnapshot === draftBaselineSnapshotRef.current) return;
+
+    setAutosaveState((current) => (current === 'saving' ? current : 'idle'));
+    autosaveTimerRef.current = setTimeout(() => {
+      void saveProject({ silent: true });
+    }, 1200);
+
+    return () => {
+      if (autosaveTimerRef.current) {
+        clearTimeout(autosaveTimerRef.current);
+        autosaveTimerRef.current = null;
+      }
+    };
+  }, [appId, appScopedEditor, authToken, autosaveSnapshot, busy, currentProjectId, projectSaving, saveProject]);
+
+  useEffect(() => {
+    if (!pendingPersistRef.current || busy || projectSaving || !hasPersistableProject) return;
+    pendingPersistRef.current = false;
+    void saveProject({ silent: true, force: true });
+  }, [busy, hasPersistableProject, projectSaving, saveProject]);
+
+  useEffect(() => {
+    if (!hasPersistableProject || !hasUnsavedProjectChanges) return;
+
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+
+    window.addEventListener('beforeunload', beforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', beforeUnload);
+    };
+  }, [hasPersistableProject, hasUnsavedProjectChanges]);
 
   const updateLayer = useCallback(
     (partial: Partial<LayerSettings>, targetVariantId = selectedVariant?.id, layerTarget = selectedLayer) => {
@@ -1078,6 +1361,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         const drafts = await createDraftVariants(firstImage);
         setVariants(drafts);
         setSelectedVariantId(drafts[0]?.id || '');
+        markProjectForPersist();
         setNotice({ tone: 'ok', text: `${imported.length} file sẵn sàng, ${drafts.length} bản xem trước nháp đã tạo` });
         return;
       }
@@ -1145,6 +1429,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
       const next = await createDraftVariants(activeSource);
       setVariants(next);
       setSelectedVariantId(next[0]?.id || '');
+      markProjectForPersist();
       setAiWorkers(createWorkerStatuses(targetVariantCount, 'idle'));
       setLastAiDuration(null);
       setNotice({ tone: 'ok', text: 'Đã tạo 4 bản nháp từ ảnh nguồn' });
@@ -1261,6 +1546,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
       setLastAiDuration(durationSeconds);
       setVariants(next);
       setSelectedVariantId(next[0]?.id || '');
+      markProjectForPersist();
       setSources((current) =>
         current.map((source) => (source.id === activeSource.id ? { ...source, status: 'done' } : source)),
       );
@@ -1451,45 +1737,6 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
     }
   };
 
-  const saveProject = async () => {
-    if (appScopedEditor && (!authToken || !appId)) {
-      setNotice({ tone: 'error', text: 'Bạn chưa đăng nhập hoặc chưa chọn app.' });
-      return;
-    }
-    if (!activeSource || !variants.length) {
-      setNotice({ tone: 'error', text: 'Cần ảnh nguồn và variant trước khi lưu' });
-      return;
-    }
-
-    setBusy(true);
-    setNotice({ tone: 'busy', text: 'Đang lưu Supabase' });
-
-    try {
-      const response = await fetch('/api/projects', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: currentProjectId || undefined,
-          appId: appId || undefined,
-          name: settings.name,
-          prompt: settings.prompt,
-          settings,
-          sourceImageDataUrl: activeSource.dataUrl,
-          variants,
-        }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.error || 'Supabase save failed');
-      if (typeof payload.id === 'string') setCurrentProjectId(payload.id);
-      if (appScopedEditor) await fetchSavedProjects();
-      setNotice({ tone: 'ok', text: `Đã lưu project ${payload.id}` });
-    } catch (error) {
-      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'LÆ°u tháº¥t báº¡i' });
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const getHandDataUrl = useCallback(async (handId: string) => {
     const cached = handDataUrlCache.current.get(handId);
     if (cached) return cached;
@@ -1573,6 +1820,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
     }));
     setVariants(restored);
     setSelectedVariantId(restored[0]?.id || '');
+    markProjectForPersist();
     setSelectedLayer('hand');
     setLastAiDuration(entry.durationSeconds);
     setAiWorkers(Array.from({ length: Math.max(restored.length, targetVariantCount) }, (_, index) => (index < restored.length ? 'done' : 'idle')));
@@ -1943,7 +2191,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
               <b>3</b>
             </div>
             <div className="sidebar-feature-menu">
-              <Link href="/" className="sidebar-feature-item">
+              <button type="button" className="sidebar-feature-item" onClick={() => void leaveEditor('/')}>
                 <span className="sidebar-feature-icon">
                   <Grid2X2 size={16} />
                 </span>
@@ -1951,7 +2199,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                   <strong>Tổng quan</strong>
                   <small>Màn hình chính cho toàn bộ ứng dụng</small>
                 </span>
-              </Link>
+              </button>
               <Link href={`/apps/${appId}`} className="sidebar-feature-item active">
                 <span className="sidebar-feature-icon">
                   <WandSparkles size={16} />
@@ -1961,7 +2209,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                   <small>Khu chỉnh sửa chính của ứng dụng này</small>
                 </span>
               </Link>
-              <Link href={`/apps/${appId}/clone`} className="sidebar-feature-item">
+              <button type="button" className="sidebar-feature-item" onClick={() => void leaveEditor(`/apps/${appId}/clone`)}>
                 <span className="sidebar-feature-icon">
                   <FileCode2 size={16} />
                 </span>
@@ -1969,9 +2217,9 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                   <strong>Tái tạo playable</strong>
                   <small>Dựng lại từ playable HTML nguồn</small>
                 </span>
-              </Link>
+              </button>
             </div>
-            <button className="secondary-button wide" type="button" onClick={resetCurrentProject}>
+            <button className="secondary-button wide" type="button" onClick={() => resetCurrentProject()}>
               <RefreshCw size={15} />
               Project mới
             </button>
@@ -1988,15 +2236,23 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                 savedProjects.map((project) => (
                   <div key={project.id} className={`project-row ${project.id === currentProjectId ? 'active' : ''}`}>
                     <button type="button" className="project-row-main" onClick={() => loadSavedProject(project.id)}>
-                      <span className="source-icon">
-                        <Save size={15} />
+                      <span className="project-row-leading">
+                        <span className="source-icon">
+                          <Save size={15} />
+                        </span>
+                        <span className="project-row-copy">
+                          <strong>{getProjectListDisplayName(project.name, project.createdAt)}</strong>
+                          <span className="project-row-meta">
+                            <span>{formatProjectVariantCount(project.variantCount)}</span>
+                            <span>{formatProjectListUpdatedAt(project.updatedAt)}</span>
+                          </span>
+                        </span>
                       </span>
-                      <span className="source-meta">
-                        <strong>{project.name}</strong>
-                        <small>
-                          {project.variantCount} biến thể · {project.ownerEmail || 'chưa rõ email'}
-                        </small>
-                      </span>
+                      {project.id === currentProjectId ? (
+                        <span className="project-row-badge">
+                          Đang mở
+                        </span>
+                      ) : null}
                     </button>
                     {studioUser && (studioUser.role === 'manager' || studioWorkspace?.memberRole === 'manager' || project.ownerUserId === studioUser.id) ? (
                       <button
@@ -2004,7 +2260,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                         type="button"
                         onClick={() => void deleteSavedProject(project)}
                         disabled={deletingProjectId === project.id}
-                        title="Xóa project"
+                        title={`Xóa ${getProjectListDisplayName(project.name, project.createdAt)}`}
                       >
                         {deletingProjectId === project.id ? <Loader2 className="spin" size={14} /> : <Trash2 size={14} />}
                       </button>
@@ -2434,6 +2690,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
             <span>Tên project</span>
             <input value={settings.name} onChange={(event) => setProjectSetting('name', event.target.value)} />
           </label>
+          <p className="field-help">Đổi tên project tại đây. Tên này sẽ được tự lưu lên Supabase và cũng có thể lưu tay bằng nút `Lưu`.</p>
           <label className="field">
             <span>Prompt</span>
             <textarea rows={5} value={settings.prompt} onChange={(event) => setProjectSetting('prompt', event.target.value)} />
@@ -2983,11 +3240,20 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
               <Archive size={16} />
               {`ZIP x${variants.length * networkExportTargets.length}`}
             </button>
-            <button className="primary-button wide" type="button" onClick={saveProject} disabled={busy || !variants.length}>
+            <button className="primary-button wide" type="button" onClick={() => void saveProject({ force: true })} disabled={busy || projectSaving || !appScopedEditor || !appId}>
               <Save size={16} />
-              Lưu
+              {projectSaving ? 'Đang lưu...' : 'Lưu'}
             </button>
           </div>
+          <p className={`field-help ${autosaveState === 'error' ? 'warn' : ''}`}>
+            {autosaveState === 'saving'
+              ? 'Tự lưu lên Supabase...'
+              : autosaveState === 'error'
+                ? `Tự lưu lỗi: ${autosaveError || 'không rõ nguyên nhân'}`
+                : lastSavedAt
+                  ? `Đã lưu Supabase lúc ${formatProjectSaveTime(lastSavedAt)}`
+                  : 'Project sẽ tự lưu lên Supabase sau khi bạn đổi tên hoặc chỉnh nội dung. Bạn cũng có thể bấm Lưu bằng tay.'}
+          </p>
         </section>
       </aside>
     </main>
@@ -3610,7 +3876,7 @@ function normalizeLayerSettings(settings: Partial<LayerSettings>): LayerSettings
     scanStyle === 'none'
       ? 'None'
       : !merged.scanAnimationName || legacyScanNames.has(merged.scanAnimationName)
-        ? 'Frame Scan'
+        ? getScanAnimationLabel(scanStyle)
         : merged.scanAnimationName;
   return {
     ...merged,
@@ -3626,6 +3892,21 @@ function normalizeLayerSettings(settings: Partial<LayerSettings>): LayerSettings
     cueShadowColor: normalizeHexColor(merged.cueShadowColor, '#000000'),
     layerOrder: getLayerOrder(merged),
   };
+}
+
+function getScanAnimationLabel(scanStyle: ScanStyle) {
+  const labels: Record<ScanStyle, string> = {
+    ripple: 'Tap Ripple',
+    face: 'Face Scan',
+    sweep: 'Sweep Line',
+    ring: 'Pulse Ring',
+    spotlight: 'Spotlight',
+    border: 'Border Scan',
+    frame: 'Frame Scan',
+    spark: 'Spark Hit',
+    none: 'None',
+  };
+  return labels[scanStyle];
 }
 
 function normalizeHexColor(value?: string, fallback = '#7c3cff') {
@@ -4079,6 +4360,95 @@ function downloadBlob(name: string, content: Blob | string, type: string) {
   anchor.click();
   anchor.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function shouldUseGeneratedProjectName(currentName: string, appName?: string) {
+  const normalized = currentName.trim().toLowerCase();
+  if (!normalized) return true;
+  if (normalized === 'playable batch' || normalized === 'playable project') return true;
+  if (appName && normalized === `${appName} project`.trim().toLowerCase()) return true;
+  return false;
+}
+
+function buildDateProjectName(date = new Date()) {
+  const year = String(date.getFullYear());
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hour = String(date.getHours()).padStart(2, '0');
+  const minute = String(date.getMinutes()).padStart(2, '0');
+  return `Project ${year}-${month}-${day} ${hour}-${minute}`;
+}
+
+function buildProjectAutosaveSnapshot({
+  projectId,
+  appId,
+  name,
+  prompt,
+  settings,
+  sourceImageDataUrl,
+  variants,
+}: {
+  projectId: string;
+  appId: string;
+  name: string;
+  prompt: string;
+  settings: ProjectSettings;
+  sourceImageDataUrl: string;
+  variants: PlayableVariant[];
+}) {
+  return JSON.stringify({
+    projectId,
+    appId,
+    name,
+    prompt,
+    settings,
+    sourceImageDataUrl,
+    variants,
+  });
+}
+
+function getProjectListDisplayName(name: string, createdAt: string) {
+  const normalized = name.trim();
+  const match = normalized.match(/^Project (\d{4})-(\d{2})-(\d{2}) (\d{2})-(\d{2})$/i);
+  if (match) {
+    const [, , month, day, hour, minute] = match;
+    return `Project ${day}/${month} · ${hour}:${minute}`;
+  }
+
+  if (!normalized || /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(normalized)) {
+    const fallback = formatProjectListUpdatedAt(createdAt);
+    return fallback === '--' ? 'Project chưa đặt tên' : `Project ${fallback}`;
+  }
+
+  return normalized;
+}
+
+function formatProjectVariantCount(value: number) {
+  if (value <= 0) return 'Chưa có biến thể';
+  return value === 1 ? '1 biến thể' : `${value} biến thể`;
+}
+
+function formatProjectListUpdatedAt(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '--';
+
+  const now = new Date();
+  const isSameDay =
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate();
+
+  return new Intl.DateTimeFormat('vi-VN', isSameDay ? { hour: '2-digit', minute: '2-digit' } : { day: '2-digit', month: '2-digit' }).format(date);
+}
+
+function formatProjectSaveTime(value: number) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '--:--';
+  return new Intl.DateTimeFormat('vi-VN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).format(date);
 }
 
 

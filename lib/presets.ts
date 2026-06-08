@@ -72,6 +72,13 @@ export const defaultLayerSettings: LayerSettings = {
 };
 
 export const scanPresets: Array<{ id: ScanStyle; label: string; note: string }> = [
+  { id: 'face', label: 'Face Scan', note: 'face corners + scan line' },
+  { id: 'sweep', label: 'Sweep Line', note: 'moving beam scan' },
+  { id: 'ripple', label: 'Tap Ripple', note: 'expanding pulse ring' },
+  { id: 'ring', label: 'Pulse Ring', note: 'continuous ring pulse' },
+  { id: 'spotlight', label: 'Spotlight', note: 'soft focus glow' },
+  { id: 'border', label: 'Border Scan', note: 'beam inside border frame' },
+  { id: 'spark', label: 'Spark Hit', note: 'quick flash pulse' },
   { id: 'frame', label: 'Frame Scan', note: 'color box + handles' },
   { id: 'none', label: 'None', note: 'off' },
 ];

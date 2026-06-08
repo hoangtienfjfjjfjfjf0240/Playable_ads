@@ -2,11 +2,14 @@ import type { User } from '@supabase/supabase-js';
 import { asDataUrl, dataUrlToBuffer } from './server-data';
 import { getSupabaseAdmin } from './supabase-admin';
 import type {
+  Orientation,
   PlayableVariant,
   ProjectSettings,
   StudioAppSummary,
   StudioDashboardPayload,
   StudioProjectDetail,
+  StudioProjectGalleryItem,
+  StudioProjectGalleryPayload,
   StudioProjectSummary,
   StudioUserRole,
   StudioUserSummary,
@@ -17,18 +20,7 @@ import type {
 const BUCKET = 'playable-assets';
 const DEFAULT_APP_NAME = 'Playable Studio';
 const APP_ACCENT_COLORS = ['#2563eb', '#14b8a6', '#f59e0b', '#8b5cf6', '#ec4899', '#10b981'];
-const PRESET_APP_NAMES = [
-  'Playable Studio',
-  'Heart Rate 2',
-  'AI-Chat',
-  'Authen 1',
-  'Heart Rate',
-  'QR Code',
-  'Calories',
-  'Tuan Nguyen Vu Trong',
-  'Calorie',
-  'Clean',
-];
+const PRESET_APP_NAMES = [DEFAULT_APP_NAME];
 
 type AdminClient = NonNullable<ReturnType<typeof getSupabaseAdmin>>;
 
@@ -131,6 +123,48 @@ export async function getDashboardPayload(ctx: StudioRequestContext): Promise<St
       myProjectCount: myProjects,
     },
     workspaces,
+  };
+}
+
+export async function getProjectGalleryPayload(ctx: StudioRequestContext): Promise<StudioProjectGalleryPayload> {
+  const workspaces = await getAccessibleWorkspaceRows(ctx);
+  const apps = await listAppsForWorkspaces(ctx.supabase, workspaces.map((workspace) => workspace.id));
+  const projects = await listProjectRowsForWorkspaces(ctx.supabase, workspaces.map((workspace) => workspace.id));
+  const workspaceMap = new Map(workspaces.map((workspace) => [workspace.id, workspace]));
+  const appMap = new Map(apps.map((app) => [app.id, app]));
+
+  const items = projects.flatMap((project) => {
+    const workspace = workspaceMap.get(project.workspace_id);
+    const app = appMap.get(project.app_id);
+    if (!workspace || !app) return [];
+
+    return [
+      {
+        id: String(project.id),
+        name: String(project.name || 'Untitled Project'),
+        workspaceId: String(project.workspace_id),
+        appId: String(project.app_id),
+        appName: String(app.name || DEFAULT_APP_NAME),
+        workspaceName: String(workspace.name || 'Workspace'),
+        ownerUserId: String(project.owner_user_id),
+        ownerEmail: String(project.owner_email || ''),
+        variantCount: Array.isArray(project.variants) ? project.variants.length : 0,
+        orientation: resolveProjectOrientation(project.settings),
+        createdAt: String(project.created_at),
+        updatedAt: String(project.updated_at),
+      } satisfies StudioProjectGalleryItem,
+    ];
+  });
+
+  return {
+    user: {
+      id: ctx.user.id,
+      email: ctx.profile.email,
+      displayName: ctx.profile.display_name,
+      role: ctx.profile.role,
+    },
+    defaultAppId: pickDefaultAppId(apps, workspaces, ctx.user.id),
+    projects: items,
   };
 }
 
@@ -304,7 +338,12 @@ export async function saveProjectRecord(ctx: StudioRequestContext, body: Record<
     app_id: app.id,
     owner_user_id: existing?.owner_user_id || ctx.user.id,
     owner_email: existing?.owner_email || ctx.profile.email,
-    name: normalizeEntityName(String(body.name || existing?.name || 'Playable project'), 'Playable project'),
+    name: normalizeProjectName(
+      typeof body.name === 'string' ? body.name : '',
+      existing?.name || '',
+      app.name,
+      now,
+    ),
     prompt: String(body.prompt || existing?.prompt || ''),
     settings: isRecord(body.settings) ? body.settings : existing?.settings || {},
     source_image_path: sourcePath,
@@ -432,18 +471,8 @@ async function getAccessibleWorkspaceSummaries(ctx: StudioRequestContext): Promi
         .eq('user_id', ctx.user.id)
         .in('workspace_id', workspaceIds)).data as Array<Pick<MembershipRow, 'workspace_id' | 'role'>>) || [];
 
-  const apps =
-    ((await ctx.supabase
-      .from('playable_apps')
-      .select('id,workspace_id,name,slug,accent_color,created_at,updated_at')
-      .in('workspace_id', workspaceIds)
-      .order('updated_at', { ascending: false })).data as AppRow[]) || [];
-
-  const projects =
-    ((await ctx.supabase
-      .from('playable_projects')
-      .select('id,workspace_id,app_id,owner_user_id,updated_at')
-      .in('workspace_id', workspaceIds)).data as Array<Pick<ProjectRow, 'id' | 'workspace_id' | 'app_id' | 'owner_user_id' | 'updated_at'>>) || [];
+  const apps = await listAppsForWorkspaces(ctx.supabase, workspaceIds);
+  const projects = await listProjectRowsForWorkspaces(ctx.supabase, workspaceIds, 'id,workspace_id,app_id,owner_user_id,updated_at');
 
   const appProjectCount = new Map<string, number>();
   const appMyProjectCount = new Map<string, number>();
@@ -529,6 +558,29 @@ async function getAccessibleWorkspaceRows(ctx: StudioRequestContext): Promise<Wo
       .select('id,name,slug,owner_user_id,created_at,updated_at')
       .in('id', extraIds)).data as WorkspaceRow[]) || [];
   return [...owned, ...extra].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+}
+
+async function listAppsForWorkspaces(supabase: AdminClient, workspaceIds: string[]) {
+  if (!workspaceIds.length) return [];
+  return (
+    ((await supabase
+      .from('playable_apps')
+      .select('id,workspace_id,name,slug,accent_color,created_by_user_id,created_at,updated_at')
+      .in('workspace_id', workspaceIds)
+      .order('updated_at', { ascending: false })).data as AppRow[]) || []
+  );
+}
+
+async function listProjectRowsForWorkspaces(
+  supabase: AdminClient,
+  workspaceIds: string[],
+  columns = 'id,name,workspace_id,app_id,owner_user_id,owner_email,variants,settings,created_at,updated_at',
+) {
+  if (!workspaceIds.length) return [];
+  return (
+    ((await supabase.from('playable_projects').select(columns).in('workspace_id', workspaceIds).order('updated_at', { ascending: false }))
+      .data as unknown as ProjectRow[]) || []
+  );
 }
 
 async function countOwnedProjects(supabase: AdminClient, userId: string, isManager: boolean) {
@@ -800,4 +852,51 @@ function isUniqueViolation(error: { code?: string | null; message?: string | nul
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function resolveProjectOrientation(settings: ProjectSettings | null | undefined): Orientation {
+  return settings?.orientation === 'landscape' ? 'landscape' : 'portrait';
+}
+
+function pickDefaultAppId(apps: AppRow[], workspaces: WorkspaceRow[], userId: string) {
+  if (!apps.length) return null;
+
+  const workspacePriority = [
+    ...workspaces.filter((workspace) => workspace.owner_user_id === userId).map((workspace) => workspace.id),
+    ...workspaces.filter((workspace) => workspace.owner_user_id !== userId).map((workspace) => workspace.id),
+  ];
+  const workspaceRank = new Map(workspacePriority.map((workspaceId, index) => [workspaceId, index]));
+  const sorted = [...apps].sort((left, right) => {
+    const leftRank = workspaceRank.get(left.workspace_id) ?? Number.MAX_SAFE_INTEGER;
+    const rightRank = workspaceRank.get(right.workspace_id) ?? Number.MAX_SAFE_INTEGER;
+    if (leftRank !== rightRank) return leftRank - rightRank;
+
+    const leftDefault = left.name.toLowerCase() === DEFAULT_APP_NAME.toLowerCase() ? 0 : 1;
+    const rightDefault = right.name.toLowerCase() === DEFAULT_APP_NAME.toLowerCase() ? 0 : 1;
+    if (leftDefault !== rightDefault) return leftDefault - rightDefault;
+
+    return right.updated_at.localeCompare(left.updated_at);
+  });
+
+  return sorted[0]?.id || null;
+}
+
+function normalizeProjectName(rawName: string, existingName: string, appName: string, nowIso: string) {
+  const preferredFallback = buildDateProjectName(nowIso);
+  const candidate = normalizeEntityName(rawName || existingName || preferredFallback, preferredFallback);
+  const lower = candidate.trim().toLowerCase();
+  const legacyNames = new Set([
+    'playable batch',
+    'playable project',
+    `${appName} project`.trim().toLowerCase(),
+  ]);
+  return legacyNames.has(lower) ? preferredFallback : candidate;
+}
+
+function buildDateProjectName(nowIso: string) {
+  const stamp = String(nowIso || '')
+    .replace('T', ' ')
+    .slice(0, 16)
+    .replace(/:/g, '-');
+  return `Project ${stamp || 'draft'}`;
 }
