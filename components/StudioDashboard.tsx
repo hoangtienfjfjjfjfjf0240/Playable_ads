@@ -491,30 +491,8 @@ export function StudioDashboard() {
 function LoginShell({ children }: { children: ReactNode }) {
   return (
     <main className="login-shell">
-      <header className="login-topbar">
-        <div className="login-topbar-inner">
-          <div className="login-brand">
-            <div className="login-brand-mark">
-              <LayoutGrid size={20} />
-            </div>
-            <div className="login-brand-copy">
-              <strong>Playable Studio</strong>
-              <span>Batch AI editor for fake playable, clone playable, and app-based project management.</span>
-            </div>
-          </div>
-
-          <div className="login-topbar-badge">Local + Supabase</div>
-        </div>
-      </header>
-
       <section className="login-stage">{children}</section>
 
-      <footer className="login-footer">
-        <div className="login-footer-inner">
-          <strong>Playable Studio</strong>
-          <span>Đăng nhập để mở đúng project đã lưu theo tài khoản của bạn.</span>
-        </div>
-      </footer>
     </main>
   );
 }

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { buttonAssets, getButtonAsset } from './button-assets';
+import { localizeDefaultCtaText, localizeDefaultCueText, resolvePromptLocale } from './content-locales';
 import { getVisualAsset, visualAssets } from './visual-assets';
 import { defaultLayerSettings, recipePresets } from './presets';
 import type {
@@ -597,21 +598,8 @@ function normalizeCueText(value: string, fallback: string) {
 function ctaTextForIntent(intent: PlayableIntent, prompt: string, fallback: string) {
   const explicit = extractPromptCtaText(prompt);
   if (explicit) return explicit;
-  if (isVietnameseRequested(prompt)) {
-    const values: Record<PlayableIntent, string> = {
-      tap_product: 'Xem ngay',
-      tap_choice: 'Chon ngay',
-      swipe_reveal: 'Kham pha',
-      drag_match: 'Thu ngay',
-      scan_object: 'Quet ngay',
-      before_after: 'So sanh',
-      count_result: 'Xem ket qua',
-      hold_charge: 'Do ngay',
-      scratch_reveal: 'Mo ngay',
-      cta_only: 'Cai ngay',
-    };
-    return values[intent];
-  }
+  const localized = localizeDefaultCtaText(intent, resolvePromptLocale(prompt));
+  if (localized) return localized;
   return fallback;
 }
 
@@ -624,26 +612,7 @@ function inferSwipeDirection(prompt: string) {
 
 function localizedCueTextForIntent(intent: PlayableIntent, prompt: string) {
   const direction = inferSwipeDirection(prompt);
-  if (isVietnameseRequested(prompt)) {
-    const values: Record<PlayableIntent, string> = {
-      tap_product: 'Cham de xem',
-      tap_choice: 'Cham de chon',
-      swipe_reveal: direction === 'up' ? 'Vuot len de kham pha' : direction === 'down' ? 'Vuot xuong de kham pha' : 'Vuot de kham pha',
-      drag_match: 'Keo de ghep',
-      scan_object: 'Cham de quet',
-      before_after: 'Vuot de so sanh',
-      count_result: 'Cham de xem ket qua',
-      hold_charge: 'Nhan giu de do',
-      scratch_reveal: 'Vuot de mo khoa',
-      cta_only: 'Cham de bat dau',
-    };
-    return values[intent];
-  }
-  if (intent === 'swipe_reveal') {
-    if (direction === 'up') return 'Swipe up to explore';
-    if (direction === 'down') return 'Swipe down to explore';
-  }
-  return '';
+  return localizeDefaultCueText(intent, resolvePromptLocale(prompt), direction);
 }
 
 function cueTextForIntent(intent: PlayableIntent, prompt: string, fallback: string) {

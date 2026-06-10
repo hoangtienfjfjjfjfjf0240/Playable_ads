@@ -38,6 +38,8 @@ type PreparedGeneration = {
   prompt: string;
   aspectRatio: string;
   count: number;
+  hasBrandAssetOverlay: boolean;
+  referenceMode: 'image' | 'playable-import';
   preferResponses: boolean;
   targetSize?: number;
 };
@@ -58,20 +60,22 @@ function prepareGeneration(body: Record<string, unknown>): PreparedGeneration {
     prompt: String(body.prompt || ''),
     aspectRatio: String(body.aspectRatio || '9:16'),
     count: normalizeVariantCount(body.count || DEFAULT_VARIANT_COUNT),
+    hasBrandAssetOverlay: body.hasBrandAssetOverlay === true,
+    referenceMode: body.referenceMode === 'playable-import' ? 'playable-import' : 'image',
     preferResponses: body.preferResponses === true,
     targetSize: Number.isFinite(Number(body.targetSize)) ? Math.max(256, Math.min(2048, Math.round(Number(body.targetSize)))) : undefined,
   };
 }
 
 async function generateVariants(body: Record<string, unknown>) {
-  const { apiKey, provider, model, imageDataUrl, prompt, aspectRatio, count, preferResponses, targetSize } = prepareGeneration(body);
+  const { apiKey, provider, model, imageDataUrl, prompt, aspectRatio, count, hasBrandAssetOverlay, referenceMode, preferResponses, targetSize } = prepareGeneration(body);
   const startedAt = Date.now();
   console.log(`[ai] generating ${count} variants in parallel with ${provider}:${model}`);
 
   const limit = pLimit(getImageConcurrency());
   const results = await Promise.allSettled(
     Array.from({ length: count }, (_, index) =>
-      limit(() => generateOneVariant({ apiKey, provider, model, imageDataUrl, prompt, aspectRatio, preferResponses, targetSize, index, count })),
+      limit(() => generateOneVariant({ apiKey, provider, model, imageDataUrl, prompt, aspectRatio, hasBrandAssetOverlay, referenceMode, preferResponses, targetSize, index, count })),
     ),
   );
 
@@ -146,6 +150,8 @@ async function generateOneVariant({
   imageDataUrl,
   prompt,
   aspectRatio,
+  hasBrandAssetOverlay,
+  referenceMode,
   preferResponses,
   targetSize,
   index,
@@ -157,12 +163,14 @@ async function generateOneVariant({
   imageDataUrl: string;
   prompt: string;
   aspectRatio: string;
+  hasBrandAssetOverlay: boolean;
+  referenceMode: 'image' | 'playable-import';
   preferResponses: boolean;
   targetSize?: number;
   index: number;
   count: number;
 }) {
-  const variantPrompt = buildVariantPrompt(prompt, index, count, aspectRatio);
+  const variantPrompt = buildVariantPrompt(prompt, index, count, aspectRatio, { hasBrandAssetOverlay, referenceMode });
   const startedAt = Date.now();
   let generated: { dataUrl: string; revisedPrompt?: string };
 
@@ -276,30 +284,88 @@ function getDefaultModel(provider: AiProvider) {
   return AI_MODEL;
 }
 
-function buildVariantPrompt(prompt: string, index: number, count: number, aspectRatio: string) {
+function buildVariantPrompt(
+  prompt: string,
+  index: number,
+  count: number,
+  aspectRatio: string,
+  options?: { hasBrandAssetOverlay?: boolean; referenceMode?: 'image' | 'playable-import' },
+) {
+  const referenceMode = options?.referenceMode || 'image';
   const cleanPrompt = sanitizeBackgroundPrompt(prompt);
-  const directions = [
-    'fresh composition, same product intent, stronger visual hierarchy',
-    'new color balance and layout, same core message and mobile readability',
-    'alternate background and content arrangement, without leaving forced empty areas',
-    'more polished ad creative, same aspect ratio and product category',
-  ];
+  const effectivePrompt = cleanPrompt || prompt.trim();
+  const distinctnessRule = buildDistinctnessRule(effectivePrompt, count, referenceMode);
+  const styleDirection = buildVariantStyleDirection(effectivePrompt, index, referenceMode);
+  const textPolicyInstruction = buildInImageTextPolicyInstruction(prompt);
+  const brandOverlayInstruction = buildBrandOverlayInstruction(options?.hasBrandAssetOverlay === true);
+  const safeZoneInstruction = buildMobileSafeZoneInstruction(options?.hasBrandAssetOverlay === true);
+  const referenceStyleInstruction = buildReferenceStyleInstruction(referenceMode);
+  const directions = buildVariantCompositionDirection(index, referenceMode);
 
   return [
     `Create variant ${index + 1} of ${Math.min(count, MAX_VARIANT_COUNT)} from the reference playable ad image.`,
     `Target aspect ratio: ${aspectRatio}.`,
     `Use a full-bleed ${aspectRatio} mobile canvas that fills the entire image edge to edge.`,
-    cleanPrompt,
-    'Language rule: use English for all in-ad text by default. If the prompt explicitly says "Language: <language>" or requests another language, use that language consistently for headlines and background text.',
-    directions[index % directions.length],
+    effectivePrompt,
+    'Treat the campaign prompt as the main creative brief for the background image. Keep the requested scene, product category, and message instead of defaulting to the same room repeatedly.',
+    referenceStyleInstruction,
+    textPolicyInstruction,
+    brandOverlayInstruction,
+    distinctnessRule,
+    styleDirection ? `Style direction for this specific variant: ${styleDirection}` : '',
+    directions,
     'Return the static background creative image only; runtime hand, scan, text cue, click cue, and CTA button overlays will be added separately.',
     'Treat any prompt mention of hand, cue text, CTA text, tap instruction, or scan box as runtime overlay guidance, not bitmap content.',
     'Do not add letterboxing, pillarboxing, black bars, outer borders, padding, or empty margins.',
     'Do not include editor UI, hand cursor, tap finger, scan target boxes, CTA buttons, install buttons, tap/click cue text, timelines, or export controls.',
-    'Keep the composition full-frame and balanced; do not reserve a fake empty lower third just for overlays.',
+    safeZoneInstruction,
   ]
     .filter(Boolean)
     .join('\n');
+}
+
+function buildBrandOverlayInstruction(hasBrandAssetOverlay: boolean) {
+  if (!hasBrandAssetOverlay) return '';
+  return 'A separate uploaded logo or icon overlay will be added later. Do not render any standalone logo, wordmark, app icon, mascot badge, corner branding, or brand sticker into the generated background image. Remove those brand marks from the reference instead of recreating them.';
+}
+
+function buildReferenceStyleInstruction(referenceMode: 'image' | 'playable-import') {
+  if (referenceMode !== 'playable-import') {
+    return 'Use the reference image as a strong visual guide for product framing, palette balance, and overall ad quality.';
+  }
+  return 'Use the imported playable frame as the primary style reference. Preserve the same visual language, palette family, contrast level, lighting mood, material treatment, device framing, background treatment, iconography feel, and overall ad-world style unless the prompt explicitly asks to change those things. Apply the user prompt inside that same creative system instead of drifting to a different art direction.';
+}
+
+function buildVariantCompositionDirection(index: number, referenceMode: 'image' | 'playable-import') {
+  const directions =
+    referenceMode === 'playable-import'
+      ? [
+          'Stay in the same creative family while varying crop, emphasis, or supporting scene details only slightly.',
+          'Keep the same art direction and styling, but adjust composition rhythm and focal emphasis for a fresh variant.',
+          'Preserve the source playable look and hierarchy, while introducing a modest alternate arrangement of secondary elements.',
+          'Keep the same brand-world styling and rendering approach, but polish the layout for a clearer mobile read.',
+        ]
+      : [
+          'fresh composition, same product intent, stronger visual hierarchy',
+          'new color balance and layout, same core message and mobile readability',
+          'alternate background and content arrangement, without leaving forced empty areas',
+          'more polished ad creative, same aspect ratio and product category',
+        ];
+  return directions[index % directions.length];
+}
+
+function buildMobileSafeZoneInstruction(hasBrandAssetOverlay: boolean) {
+  const topLeftRule = hasBrandAssetOverlay
+    ? 'Keep the upper-left corner relatively clean and low-detail so the separate logo overlay can sit there without colliding with important content.'
+    : '';
+  return [
+    'Respect mobile overlay safe zones. Keep the main subject, device, product, and any allowed headline comfortably inside the central composition instead of pushing them down to the bottom edge.',
+    'Avoid placing important content, dense detail, faces, phones, or text inside the bottom 18% of the frame. That lower area should stay simpler for runtime CTA overlays, but not look like an obvious empty band.',
+    'Do not crop or anchor the main subject too low. Keep enough breathing room above the bottom safe zone and away from the left and right edges.',
+    topLeftRule,
+  ]
+    .filter(Boolean)
+    .join(' ');
 }
 
 function sanitizeBackgroundPrompt(prompt: string) {
@@ -315,6 +381,12 @@ function sanitizeBackgroundPrompt(prompt: string) {
     next = next.replace(pattern, ' ');
   }
 
+  const clauses = splitPromptClauses(next);
+  const keptClauses = clauses.filter((clause) => !isOverlayOnlyClause(clause));
+  if (keptClauses.length) {
+    next = keptClauses.join(', ');
+  }
+
   next = next
     .replace(/\s*([,.;])\s*/g, '$1 ')
     .replace(/\s+/g, ' ')
@@ -323,6 +395,165 @@ function sanitizeBackgroundPrompt(prompt: string) {
 
   return next || prompt.trim();
 }
+
+function splitPromptClauses(prompt: string) {
+  return prompt
+    .split(/\r?\n+|[.;]+|,(?=\s)/g)
+    .map((clause) => clause.trim())
+    .filter(Boolean);
+}
+
+function isOverlayOnlyClause(clause: string) {
+  const value = normalizePromptText(clause);
+  if (!value) return false;
+  if (/(cue text|text cue|instruction text|cta text|button text|button label|text huong dan|text keu goi|text nut)/.test(value)) return true;
+  if (/(bo|xoa|an|hide|remove).*(text|cta|cue|scan|tay|hand|button|install)/.test(value)) return true;
+
+  const overlayWords =
+    /(tay|hand|cursor|swipe|slide|tap|click|drag|double tap|press|press and hold|hold|scan|quet|nhan dien|animation|animated|loop|cta|button|install|download|cue|huong dan|goi y)/.test(
+      value,
+    );
+  const creativeWords =
+    /(living room|phong khach|bedroom|kitchen|interior|room|scene|style|layout|background|product|creative|composition|bo cuc|mau sac|color|lighting|sofa|wall|floor|furniture|environment|variant|canvas|headline|title|logo|avatar|phone|mockup|character|mascot)/.test(
+      value,
+    );
+
+  if (overlayWords && !creativeWords) return true;
+  return /(goc duoi|lower area|bottom area|safe area).*(text|cta|cue|button|scan|tay|hand)/.test(value);
+}
+
+function normalizePromptText(value: string) {
+  return value
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
+type InImageTextPolicy = 'remove-all' | 'primary-only' | 'keep-all';
+
+function buildInImageTextPolicyInstruction(prompt: string) {
+  const policy = resolveInImageTextPolicy(prompt);
+  if (policy === 'keep-all') {
+    return 'In-image text policy: keep only the text explicitly requested in the prompt or clearly essential from the reference. Preserve the main headline and short supporting copy when needed, but still remove CTA buttons, scan labels, editor UI, disclaimers, and tiny filler text. If the prompt requests another language, use that language only for the kept text.';
+  }
+  if (policy === 'primary-only') {
+    return 'In-image text policy: keep only one short primary headline when the prompt explicitly asks for text. Remove all secondary copy, badges, labels, pricing, stickers, paragraphs, CTA buttons, and fine print. If the prompt requests another language, use that language only for the single kept headline.';
+  }
+  return 'In-image text policy: remove all visible text from the generated image by default, including any text that appears in the reference image. Do not render headlines, subheads, labels, price tags, badges, CTA buttons, captions, disclaimers, or paragraph copy inside the image.';
+}
+
+function resolveInImageTextPolicy(prompt: string): InImageTextPolicy {
+  const value = normalizePromptText(prompt);
+  if (/(remove|without|no|xoa|bo|an|hide).*(text|headline|copy|chu|title)/.test(value)) return 'remove-all';
+  if (/(keep all text|giu tat ca text|giu toan bo text|giu full text|giu nguyen text|keep full copy|preserve all text|all text)/.test(value)) return 'keep-all';
+  if (/(main text only|primary text only|headline only|only one headline|one main headline|keep main text|keep primary headline|giu text chinh|chi giu text chinh|chi de text chinh|giu headline chinh|giu tieu de chinh|text chinh thoi|headline chinh thoi)/.test(value)) {
+    return 'primary-only';
+  }
+  if (/(keep text|giu text|de text|headline|tieu de|title|copy trong anh|text trong anh|in-image text|text in image|viet text|viet headline|giu chu)/.test(value)) {
+    return 'primary-only';
+  }
+  return 'remove-all';
+}
+
+function buildDistinctnessRule(prompt: string, count: number, referenceMode: 'image' | 'playable-import') {
+  if (count <= 1) return '';
+  if (referenceMode === 'playable-import') {
+    return 'Each variant must remain in the same creative family as the source playable. Do not switch to a different art direction, different brand mood, or unrelated visual style. Variants can change scene details, crop, supporting props, or layout emphasis, but should still feel like the same campaign system.';
+  }
+  if (isInteriorPrompt(prompt)) {
+    return 'Each variant must look like a genuinely different room concept, not a minor edit of the same room. Change furniture family, wall treatment, flooring or rug, decor, lighting mood, materials, and camera framing between variants. Do not reuse the same sofa/window layout with only small recolors.';
+  }
+  return 'Each variant must be clearly different from the others in composition, palette, styling, and mood. Do not return near-duplicates with only tiny edits.';
+}
+
+function buildVariantStyleDirection(prompt: string, index: number, referenceMode: 'image' | 'playable-import') {
+  const pack =
+    referenceMode === 'playable-import'
+      ? playableImportStyleDirections
+      : isInteriorPrompt(prompt)
+        ? interiorStyleDirections
+        : genericStyleDirections;
+  const direction = pack[index % pack.length];
+  return `${direction.label}: ${direction.brief}`;
+}
+
+function isInteriorPrompt(prompt: string) {
+  const value = normalizePromptText(prompt);
+  return /(living room|phong khach|interior|room design|room|sofa|bedroom|kitchen|furniture|home decor|decor room|noi that)/.test(value);
+}
+
+const interiorStyleDirections = [
+  {
+    label: 'Scandinavian Minimal',
+    brief: 'bright daylight, pale oak, soft neutral palette, airy spacing, clean modern furniture lines',
+  },
+  {
+    label: 'Japandi Calm',
+    brief: 'warm wood, textured plaster, low-profile furniture, earthy beige tones, serene uncluttered styling',
+  },
+  {
+    label: 'Modern Luxury',
+    brief: 'stone or marble accents, sculptural lighting, premium materials, refined contrast, polished upscale finish',
+  },
+  {
+    label: 'Eclectic Colorful',
+    brief: 'layered textiles, statement art, richer accent colors, plants, collected personality, bolder decor mix',
+  },
+  {
+    label: 'Classic Cozy',
+    brief: 'traditional details, warm lamp light, darker wood, plush seating, timeless elegant decor',
+  },
+  {
+    label: 'Contemporary Industrial',
+    brief: 'architectural lines, black metal accents, concrete or stone textures, loft-inspired mood, cooler palette',
+  },
+] as const;
+
+const genericStyleDirections = [
+  {
+    label: 'Premium Clean',
+    brief: 'minimal clutter, strong hierarchy, bright polished lighting, crisp premium presentation',
+  },
+  {
+    label: 'Playful Color Pop',
+    brief: 'more vibrant palette, energetic accents, friendlier shapes, lively consumer-ad feel',
+  },
+  {
+    label: 'Editorial Luxury',
+    brief: 'refined composition, richer materials, softer dramatic light, upscale campaign mood',
+  },
+  {
+    label: 'Bold High Contrast',
+    brief: 'clear focal contrast, sharper geometry, stronger separation, more assertive visual impact',
+  },
+  {
+    label: 'Lifestyle Soft Natural',
+    brief: 'natural textures, human warmth, softer daylight, relaxed authentic atmosphere',
+  },
+  {
+    label: 'Tech Forward',
+    brief: 'sleek surfaces, cleaner geometry, futuristic polish, sharper highlights, more digital energy',
+  },
+] as const;
+
+const playableImportStyleDirections = [
+  {
+    label: 'Source-Matched Balance',
+    brief: 'keep the same palette family, styling language, and rendering feel; vary only the focal balance and spacing slightly',
+  },
+  {
+    label: 'Source-Matched Emphasis',
+    brief: 'preserve the same ad-world mood and device treatment while shifting emphasis between hero subject and supporting elements',
+  },
+  {
+    label: 'Source-Matched Crop',
+    brief: 'stay close to the original composition system, with a modest alternate crop and secondary arrangement in the same style',
+  },
+  {
+    label: 'Source-Matched Polish',
+    brief: 'retain the same creative direction, texture treatment, and visual hierarchy while refining readability for mobile',
+  },
+] as const;
 
 async function callResponsesImageGeneration({
   apiKey,

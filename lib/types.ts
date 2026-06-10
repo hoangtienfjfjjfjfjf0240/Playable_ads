@@ -11,6 +11,7 @@ export type ImageFit = 'cover' | 'contain';
 export type AiProvider = 'openai' | 'gemini-flash' | 'gemini-pro';
 export type StorePlatform = 'app-store' | 'google-play' | 'custom';
 export type StoreRoutingMode = 'single' | 'platform-auto';
+export type ContentLocale = 'auto' | 'en' | 'vi' | 'es' | 'fr' | 'de' | 'pt-br' | 'id' | 'th';
 
 export type HandMotion =
   | 'tap'
@@ -197,12 +198,17 @@ export interface LayerSettings {
   assetRotation: number;
   assetLocked: boolean;
   assetSpeed: number;
+  customAssetDataUrl: string;
+  customAssetName: string;
   injectAsset: boolean;
 }
 
 export interface ProjectSettings {
   name: string;
   prompt: string;
+  locale: ContentLocale;
+  brandAssetDataUrl: string;
+  brandAssetName: string;
   storeUrl: string;
   appStoreUrl: string;
   googlePlayUrl: string;

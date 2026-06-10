@@ -16,6 +16,10 @@ import {
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  applyContentLocaleToPrompt,
+  contentLocaleOptions,
+} from '../lib/content-locales';
+import {
   createDefaultProjectSettings,
   generateImagePlayableHtml,
   networkExportTargets,
@@ -100,6 +104,7 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
   const storeConfig = useMemo(() => resolveProjectStoreConfig(settings), [settings]);
   const selectedVariant = variants.find((item) => item.id === selectedVariantId) || variants[0] || null;
   const cloneSourceLabel = analysis ? (analysis.convertedFromWrapper ? 'Wrapper đã xử lý' : 'HTML trực tiếp') : 'Chưa có nguồn';
+  const localizedPrompt = useMemo(() => applyContentLocaleToPrompt(settings.prompt, settings.locale), [settings.locale, settings.prompt]);
 
   const resetCloneWorkspace = useCallback(() => {
     setAnalysis(null);
@@ -207,7 +212,7 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
       html: analysis.documentHtml,
       assets: analysis.assets,
       hotspot: defaultHotspot(),
-      prompt: settings.prompt,
+      prompt: localizedPrompt,
       layout,
     });
     setInference((current) => (variants.length ? current : seeded));
@@ -237,7 +242,7 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         imageDataUrl,
-        prompt: settings.prompt,
+        prompt: localizedPrompt,
         index: 1,
         count: settings.variantCount,
         hotspot,
@@ -269,7 +274,7 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
 
   const resetVariantLayersFromInference = () => {
     if (!selectedVariant || !inference) return;
-    const rebuilt = layerFromPlayablePlan(inference.plan, settings.prompt);
+    const rebuilt = layerFromPlayablePlan(inference.plan, localizedPrompt);
     setVariants((current) =>
       current.map((variant) => {
         if (!syncLayerEdits && variant.id !== selectedVariant.id) return variant;
@@ -353,13 +358,13 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
         html: analysis.documentHtml,
         assets: analysis.assets,
         hotspot,
-        prompt: settings.prompt,
+        prompt: localizedPrompt,
         layout,
         sourceKind: captured.sourceKind,
         visionPlan,
       });
       const requestPrompt = buildPlayableClonePrompt({
-        userPrompt: settings.prompt,
+        userPrompt: localizedPrompt,
         inference: cloneInference,
         orientation: settings.orientation,
       });
@@ -392,7 +397,7 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
         hotspot,
         createdAt: Date.now(),
       };
-      const layerBase = layerFromPlayablePlan(cloneInference.plan, settings.prompt);
+      const layerBase = layerFromPlayablePlan(cloneInference.plan, localizedPrompt);
       const nextVariants = await Promise.all(
         payload.variants.map(async (item, index) => {
           const dimensions = await getImageDimensions(item.dataUrl);
@@ -611,6 +616,19 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
               onChange={(event) => setProjectSetting('prompt', event.target.value)}
               placeholder="Mô tả creative mới. Ý đồ của playable nguồn và logic overlay sẽ được giữ và tách xử lý riêng."
             />
+          </label>
+          <label className="field">
+            <span>Ngôn ngữ localize</span>
+            <select value={settings.locale} onChange={(event) => setProjectSetting('locale', event.target.value as ProjectSettings['locale'])}>
+              {contentLocaleOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <small className="field-help">
+              Localize CTA/cue runtime ngay trong clone flow. Nếu muốn localize text nằm trong ảnh clone, hãy ghi rõ giữ headline/text nào thay vì để hệ thống tự xóa sạch text.
+            </small>
           </label>
           <div className="field-grid two">
             <label className="field">

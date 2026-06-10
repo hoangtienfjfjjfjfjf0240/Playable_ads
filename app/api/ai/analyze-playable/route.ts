@@ -174,6 +174,7 @@ function buildAnalyzerPrompt({
     prompt ? `Campaign prompt: ${prompt}` : '',
     `Fallback hotspot: x=${Math.round(hotspot.x)}, y=${Math.round(hotspot.y)}, confidence=${hotspot.confidence.toFixed(2)}.`,
     'Choose exactly one intent that best matches the visual.',
+    'The campaign prompt can mix background-image requests with runtime overlay requests. Use prompt phrases about hand, tap, swipe, drag, scan, CTA, cue, or animation to plan runtime interaction. Ignore variant-count, room/style/layout requests when choosing hand motion and overlay behavior.',
     'Interaction priority from prompt: button/CTA/install/download means cta_only with hand tapping the CTA; tap/click area means tap_product; choose/select/option means tap_choice; drag means drag_match; before/after comparison means before_after with horizontal hand movement; swipe up/down or scroll up/down means swipe_reveal with vertical hand movement; scratch/reward/bonus/unlock means scratch_reveal; scan/camera/detect/measure means scan_object; result/count/score/percent/BPM/calorie means count_result.',
     'Use English for CTA text and cue text by default. If the campaign prompt says "Language: <language>" or asks for another language, write both CTA text and cue text in that language.',
     'If the campaign prompt explicitly gives cue text or CTA copy, preserve that wording verbatim instead of inventing a generic replacement.',

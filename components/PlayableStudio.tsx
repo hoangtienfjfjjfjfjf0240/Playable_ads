@@ -65,7 +65,9 @@ import {
   patchPlayableHtml,
   safeFileName,
 } from '../lib/export-engine';
+import { buildVariantPreviewGif, getVariantPreviewGifName } from '../lib/gif-preview';
 import { buttonAssets, getButtonAsset } from '../lib/button-assets';
+import { applyContentLocaleToPrompt, contentLocaleOptions } from '../lib/content-locales';
 import { getHandAnchorOffset, getHandAsset, handAssets } from '../lib/hand-assets';
 import { detectImageHotspot, getImageDimensions, loadAssetAsDataUrl, readFileAsDataUrl, readFileAsText } from '../lib/image-utils';
 import {
@@ -156,6 +158,8 @@ async function mapWithConcurrency<T, R>(items: T[], concurrency: number, worker:
 
 const LAYER_DRAG_TYPE = 'application/x-playable-layer';
 const ASSET_DRAG_TYPE = 'application/x-playable-asset';
+const SCAN_STYLE_DRAG_TYPE = 'application/x-playable-scan-style';
+const DRAG_FALLBACK_TYPE = 'text/plain';
 const layerFieldMap: Record<LayerTarget, Array<keyof LayerSettings>> = {
   image: ['imageX', 'imageY', 'imageWidth', 'imageHeight', 'imageRotation', 'imageLocked'],
   hand: [
@@ -203,7 +207,7 @@ const layerFieldMap: Record<LayerTarget, Array<keyof LayerSettings>> = {
     'handMotion',
     'injectHand',
   ],
-  asset: ['layerOrder', 'assetId', 'assetX', 'assetY', 'assetSize', 'assetRotation', 'assetLocked', 'assetSpeed', 'injectAsset'],
+  asset: ['layerOrder', 'assetId', 'assetX', 'assetY', 'assetSize', 'assetRotation', 'assetLocked', 'assetSpeed', 'customAssetDataUrl', 'customAssetName', 'injectAsset'],
   cta: [
     'layerOrder',
     'ctaText',
@@ -267,7 +271,7 @@ const lockedLayerFieldMap: Record<LayerTarget, Array<keyof LayerSettings>> = {
     'scanOffsetY',
     'injectScan',
   ],
-  asset: ['assetId', 'assetX', 'assetY', 'assetSize', 'assetRotation', 'assetSpeed', 'injectAsset'],
+  asset: ['assetId', 'assetX', 'assetY', 'assetSize', 'assetRotation', 'assetSpeed', 'customAssetDataUrl', 'customAssetName', 'injectAsset'],
   cta: [
     'ctaText',
     'ctaX',
@@ -368,19 +372,66 @@ const scanColorSwatches = ['#7c3cff', '#2563eb', '#22d3ee', '#10b981', '#f59e0b'
 const APPLOVIN_MAX_HTML_BYTES = 5 * 1024 * 1024;
 const ANALYZE_CONCURRENCY = 4;
 
-function setLayerDragData(event: DragEvent<HTMLElement>, layer: LayerTarget, assetId?: string) {
+function setLayerDragData(event: DragEvent<HTMLElement>, layer: LayerTarget, assetId?: string, scanStyle?: ScanStyle) {
   event.dataTransfer.setData(LAYER_DRAG_TYPE, layer);
   if (assetId) event.dataTransfer.setData(ASSET_DRAG_TYPE, assetId);
+  if (scanStyle) event.dataTransfer.setData(SCAN_STYLE_DRAG_TYPE, scanStyle);
+  event.dataTransfer.setData(
+    DRAG_FALLBACK_TYPE,
+    JSON.stringify({
+      layer,
+      assetId,
+      scanStyle,
+    }),
+  );
   event.dataTransfer.effectAllowed = 'move';
 }
 
 function getLayerDragData(event: DragEvent<HTMLElement>): LayerTarget | null {
   const value = event.dataTransfer.getData(LAYER_DRAG_TYPE);
+  if (value === '') {
+    const fallback = event.dataTransfer.getData(DRAG_FALLBACK_TYPE);
+    if (!fallback) return null;
+    try {
+      const payload = JSON.parse(fallback) as { layer?: string };
+      const parsed = payload.layer;
+      return parsed === 'image' || parsed === 'hand' || parsed === 'scan' || parsed === 'asset' || parsed === 'cta' || parsed === 'text' ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
   return value === 'image' || value === 'hand' || value === 'scan' || value === 'asset' || value === 'cta' || value === 'text' ? value : null;
 }
 
 function getAssetDragData(event: DragEvent<HTMLElement>) {
-  return event.dataTransfer.getData(ASSET_DRAG_TYPE) || '';
+  const direct = event.dataTransfer.getData(ASSET_DRAG_TYPE);
+  if (direct) return direct;
+  const fallback = event.dataTransfer.getData(DRAG_FALLBACK_TYPE);
+  if (!fallback) return '';
+  try {
+    const payload = JSON.parse(fallback) as { assetId?: string };
+    return payload.assetId || '';
+  } catch {
+    return '';
+  }
+}
+
+function getScanStyleDragData(event: DragEvent<HTMLElement>): ScanStyle | null {
+  const direct = event.dataTransfer.getData(SCAN_STYLE_DRAG_TYPE);
+  if (direct === 'ripple' || direct === 'face' || direct === 'sweep' || direct === 'ring' || direct === 'spotlight' || direct === 'border' || direct === 'frame' || direct === 'spark' || direct === 'none') {
+    return direct;
+  }
+  const fallback = event.dataTransfer.getData(DRAG_FALLBACK_TYPE);
+  if (!fallback) return null;
+  try {
+    const payload = JSON.parse(fallback) as { scanStyle?: string };
+    const value = payload.scanStyle;
+    return value === 'ripple' || value === 'face' || value === 'sweep' || value === 'ring' || value === 'spotlight' || value === 'border' || value === 'frame' || value === 'spark' || value === 'none'
+      ? value
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function getPointInElement(element: HTMLElement, clientX: number, clientY: number) {
@@ -579,7 +630,7 @@ function getRecipePatchForLayer(layer: Partial<LayerSettings>, target: LayerTarg
       : {};
   }
 
-  const patch = pickLayerFields(layer, ['assetId', 'assetX', 'assetY', 'assetSize', 'assetSpeed']);
+  const patch = pickLayerFields(layer, ['assetId', 'assetX', 'assetY', 'assetSize', 'assetSpeed', 'customAssetDataUrl', 'customAssetName']);
   return Object.keys(patch).length
     ? ({
         ...patch,
@@ -590,6 +641,7 @@ function getRecipePatchForLayer(layer: Partial<LayerSettings>, target: LayerTarg
 
 export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const brandAssetInputRef = useRef<HTMLInputElement>(null);
   const handDataUrlCache = useRef(new Map<string, string>());
   const cloneImportCheckedRef = useRef(false);
   const freshProjectHandledRef = useRef(false);
@@ -599,6 +651,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
   const saveRequestRef = useRef<Promise<string | null> | null>(null);
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSavedSnapshotRef = useRef('');
+  const lastFailedSnapshotRef = useRef('');
   const draftBaselineSnapshotRef = useRef('');
   const pendingPersistRef = useRef(false);
   const supabase = useMemo(() => getSupabaseBrowser(), []);
@@ -685,17 +738,18 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
   const requestedProjectId = searchParams?.get('projectId') || '';
   const requestedProjectName = searchParams?.get('name') || '';
   const wantsFreshProject = searchParams?.get('new') === '1';
+  const localizedPrompt = useMemo(() => applyContentLocaleToPrompt(settings.prompt, settings.locale), [settings.locale, settings.prompt]);
   const autosaveSnapshot = useMemo(() => {
     if (!appScopedEditor || !appId) return '';
-    return buildProjectAutosaveSnapshot({
-      projectId: currentProjectId || '',
+    return buildProjectAutosaveSnapshot(buildProjectSavePayload({
+      id: currentProjectId || '',
       appId,
       name: settings.name,
       prompt: settings.prompt,
       settings,
       sourceImageDataUrl: activeSource?.dataUrl || '',
       variants,
-    });
+    }));
   }, [activeSource?.dataUrl, appId, appScopedEditor, currentProjectId, settings, variants]);
   const hasProjectContent = Boolean(activeSource?.dataUrl || variants.length);
   const hasPersistableProject = Boolean(appScopedEditor && appId && hasProjectContent);
@@ -920,8 +974,8 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
       }
 
       const stableProjectId = currentProjectIdRef.current || pendingProjectIdRef.current || '';
-      const snapshot = buildProjectAutosaveSnapshot({
-        projectId: stableProjectId,
+      const savePayload = buildProjectSavePayload({
+        id: stableProjectId,
         appId: appId || '',
         name: settings.name,
         prompt: settings.prompt,
@@ -929,6 +983,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         sourceImageDataUrl: activeSource?.dataUrl || '',
         variants,
       });
+      const snapshot = buildProjectAutosaveSnapshot(savePayload);
       if (!force && snapshot === lastSavedSnapshotRef.current) {
         return stableProjectId || null;
       }
@@ -961,13 +1016,8 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
           method: 'POST',
           headers,
           body: JSON.stringify({
+            ...savePayload,
             id: resolvedProjectId,
-            appId: appId || undefined,
-            name: settings.name,
-            prompt: settings.prompt,
-            settings,
-            sourceImageDataUrl: activeSource?.dataUrl || '',
-            variants,
           }),
         });
         const payload = await response.json().catch(() => ({}));
@@ -978,14 +1028,10 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
           currentProjectIdRef.current = savedId;
           pendingProjectIdRef.current = savedId;
           setCurrentProjectId(savedId);
+          lastFailedSnapshotRef.current = '';
           lastSavedSnapshotRef.current = buildProjectAutosaveSnapshot({
-            projectId: savedId,
-            appId: appId || '',
-            name: settings.name,
-            prompt: settings.prompt,
-            settings,
-            sourceImageDataUrl: activeSource?.dataUrl || '',
-            variants,
+            ...savePayload,
+            id: savedId,
           });
         }
         setAutosaveState('saved');
@@ -1005,6 +1051,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         if (!currentProjectIdRef.current) {
           pendingProjectIdRef.current = '';
         }
+        lastFailedSnapshotRef.current = snapshot;
         setAutosaveState('error');
         setAutosaveError(message);
         setNotice({ tone: 'error', text: message });
@@ -1021,8 +1068,8 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
   const resetCurrentProject = useCallback((nextProjectName?: string) => {
     const baseSettings = normalizeProjectSettings(createDefaultProjectSettings());
     const projectName = nextProjectName?.trim() || studioApp?.name || 'Untitled Project';
-    const baselineSnapshot = buildProjectAutosaveSnapshot({
-      projectId: '',
+    const baselineSnapshot = buildProjectAutosaveSnapshot(buildProjectSavePayload({
+      id: '',
       appId: appId || '',
       name: projectName,
       prompt: baseSettings.prompt,
@@ -1032,8 +1079,9 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
       },
       sourceImageDataUrl: '',
       variants: [],
-    });
+    }));
     lastSavedSnapshotRef.current = '';
+    lastFailedSnapshotRef.current = '';
     draftBaselineSnapshotRef.current = baselineSnapshot;
     pendingPersistRef.current = false;
     setAutosaveState('idle');
@@ -1144,8 +1192,8 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
           })),
         );
         setSelectedVariantId(project.variants[0]?.id || '');
-        lastSavedSnapshotRef.current = buildProjectAutosaveSnapshot({
-          projectId: project.id,
+        lastSavedSnapshotRef.current = buildProjectAutosaveSnapshot(buildProjectSavePayload({
+          id: project.id,
           appId: project.appId,
           name: project.settings?.name || project.name,
           prompt: project.prompt,
@@ -1157,7 +1205,8 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
             hotspot: variant.hotspot || { x: 50, y: 72, confidence: 0.28 },
             settings: normalizeLayerSettings(variant.settings),
           })),
-        });
+        }));
+        lastFailedSnapshotRef.current = '';
         draftBaselineSnapshotRef.current = lastSavedSnapshotRef.current;
         pendingPersistRef.current = false;
         setAutosaveState('saved');
@@ -1193,6 +1242,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
   useEffect(() => {
     if (!appScopedEditor || !authToken || !appId || !studioApp || !autosaveSnapshot || busy || projectSaving) return;
     if (autosaveSnapshot === lastSavedSnapshotRef.current) return;
+    if (autosaveSnapshot === lastFailedSnapshotRef.current) return;
     if (!currentProjectId && autosaveSnapshot === draftBaselineSnapshotRef.current) return;
 
     setAutosaveState((current) => (current === 'saving' ? current : 'idle'));
@@ -1286,14 +1336,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
             createdAt: Date.now(),
           });
         } else if (/\.html?$/i.test(file.name)) {
-          imported.push({
-            id: uid(),
-            name: file.name,
-            kind: 'html',
-            status: 'ready',
-            html: await readFileAsText(file),
-            createdAt: Date.now(),
-          });
+          imported.push(await buildPlayableHtmlSource(file, settings.orientation));
         }
       }
 
@@ -1315,22 +1358,121 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
       if (!currentPrompt || currentPrompt === legacyDefaultProjectPrompt || currentPrompt === defaultProjectPrompt) {
         setProjectSetting('prompt', defaultProjectPrompt);
       }
-      const firstImage = imported.find((source) => source.kind === 'image' && source.dataUrl);
-      if (firstImage) {
-        const drafts = await createDraftVariants(firstImage);
+      const firstVisualSource = imported.find((source) => source.dataUrl);
+      const htmlFrameReadyCount = imported.filter((source) => source.kind === 'html' && source.dataUrl).length;
+      const htmlFrameFailedCount = imported.filter((source) => source.kind === 'html' && !source.dataUrl).length;
+      if (firstVisualSource) {
+        const drafts = await createDraftVariants(firstVisualSource);
         setVariants(drafts);
         setSelectedVariantId(drafts[0]?.id || '');
         markProjectForPersist();
-        setNotice({ tone: 'ok', text: `${imported.length} file sẵn sàng, ${drafts.length} bản xem trước nháp đã tạo` });
+        setNotice({
+          tone: htmlFrameFailedCount ? 'warn' : 'ok',
+          text: `${imported.length} file sẵn sàng, ${drafts.length} bản xem trước nháp đã tạo${
+            htmlFrameReadyCount ? `, ${htmlFrameReadyCount} playable đã có frame AI` : ''
+          }${htmlFrameFailedCount ? `, ${htmlFrameFailedCount} playable chưa chụp được frame` : ''}`,
+        });
         return;
       }
-      setNotice({ tone: 'ok', text: `${imported.length} file sẵn sàng` });
+      setNotice({
+        tone: htmlFrameFailedCount ? 'warn' : 'ok',
+        text: `${imported.length} file sẵn sàng${htmlFrameFailedCount ? `, ${htmlFrameFailedCount} playable chưa chụp được frame AI` : ''}`,
+      });
     } catch (error) {
       setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Import tháº¥t báº¡i' });
     } finally {
       setBusy(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
+  };
+
+  const attachBrandAssetToLayer = (layer: Partial<LayerSettings>, dataUrl: string, name: string) => {
+    const current = normalizeLayerSettings(layer);
+    const hadCustomAsset = Boolean(current.customAssetDataUrl);
+    return normalizeLayerSettings({
+      ...current,
+      customAssetDataUrl: dataUrl,
+      customAssetName: name,
+      injectAsset: true,
+      assetX: hadCustomAsset || current.injectAsset ? current.assetX : 14,
+      assetY: hadCustomAsset || current.injectAsset ? current.assetY : 10,
+      assetSize: hadCustomAsset || current.injectAsset ? current.assetSize : 88,
+      assetRotation: hadCustomAsset ? current.assetRotation : 0,
+      layerOrder: ensureLayerInOrder(getLayerOrder(current), 'asset'),
+    });
+  };
+
+  const detachBrandAssetFromLayer = (layer: Partial<LayerSettings>) => {
+    const current = normalizeLayerSettings(layer);
+    return normalizeLayerSettings({
+      ...current,
+      customAssetDataUrl: '',
+      customAssetName: '',
+      injectAsset: false,
+    });
+  };
+
+  const syncBrandAssetAcrossEditor = (dataUrl: string, name: string) => {
+    if (variants.length) {
+      setVariants((current) =>
+        current.map((variant) => ({
+          ...variant,
+          settings: attachBrandAssetToLayer(variant.settings, dataUrl, name),
+        })),
+      );
+    }
+
+    if (activeSource?.kind === 'html') {
+      setHtmlLayerSettings((current) => attachBrandAssetToLayer(current, dataUrl, name));
+    }
+  };
+
+  const clearBrandAssetAcrossEditor = () => {
+    if (variants.length) {
+      setVariants((current) =>
+        current.map((variant) => ({
+          ...variant,
+          settings: detachBrandAssetFromLayer(variant.settings),
+        })),
+      );
+    }
+
+    if (activeSource?.kind === 'html') {
+      setHtmlLayerSettings((current) => detachBrandAssetFromLayer(current));
+    }
+  };
+
+  const importBrandAsset = async (files: FileList | File[] | null | undefined) => {
+    const file = files?.[0];
+    if (!file) return;
+
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      setSettings((current) => ({
+        ...current,
+        brandAssetDataUrl: dataUrl,
+        brandAssetName: file.name,
+      }));
+      syncBrandAssetAcrossEditor(dataUrl, file.name);
+      setSelectedLayer('asset');
+      markProjectForPersist();
+      setNotice({ tone: 'ok', text: `Đã gắn ${file.name} vào asset layer` });
+    } catch (error) {
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Không đọc được logo/icon.' });
+    } finally {
+      if (brandAssetInputRef.current) brandAssetInputRef.current.value = '';
+    }
+  };
+
+  const clearBrandAsset = () => {
+    setSettings((current) => ({
+      ...current,
+      brandAssetDataUrl: '',
+      brandAssetName: '',
+    }));
+    clearBrandAssetAcrossEditor();
+    markProjectForPersist();
+    setNotice({ tone: 'ok', text: 'Đã xóa logo/icon khỏi asset layer' });
   };
 
   const createVariantFromImage = async (
@@ -1341,7 +1483,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
     const dimensions = await getImageDimensions(image.dataUrl);
     const rawHotspot = await detectImageHotspot(image.dataUrl).catch(() => source.hotspot || defaultHotspot());
     const hotspot = projectHotspotToFrame(rawHotspot, dimensions, settings.orientation, activeImageFit);
-    const plan = heuristicPlanFromHotspot(hotspot, index, settings.prompt);
+    const plan = heuristicPlanFromHotspot(hotspot, index, localizedPrompt);
     return {
       id: uid(),
       sourceId: source.id,
@@ -1353,7 +1495,9 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
       revisedPrompt: image.revisedPrompt || '',
       hotspot: hotspotFromPlayablePlan(plan),
       plan,
-      settings: layerFromPlayablePlan(plan, settings.prompt || image.revisedPrompt || ''),
+      settings: settings.brandAssetDataUrl
+        ? attachBrandAssetToLayer(layerFromPlayablePlan(plan, localizedPrompt || image.revisedPrompt || ''), settings.brandAssetDataUrl, settings.brandAssetName)
+        : layerFromPlayablePlan(plan, localizedPrompt || image.revisedPrompt || ''),
     };
   };
 
@@ -1378,8 +1522,8 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
     );
 
   const cloneSourceToVariants = async () => {
-    if (!activeSource?.dataUrl || activeSource.kind !== 'image') {
-      setNotice({ tone: 'error', text: 'Chọn ảnh nguồn trước' });
+    if (!activeSource?.dataUrl) {
+      setNotice({ tone: 'error', text: 'Chọn ảnh nguồn hoặc playable HTML trước' });
       return;
     }
 
@@ -1391,15 +1535,15 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
       markProjectForPersist();
       setAiWorkers(createWorkerStatuses(targetVariantCount, 'idle'));
       setLastAiDuration(null);
-      setNotice({ tone: 'ok', text: 'Đã tạo 4 bản nháp từ ảnh nguồn' });
+      setNotice({ tone: 'ok', text: activeSource.kind === 'html' ? 'Đã tạo bản nháp từ playable HTML' : 'Đã tạo 4 bản nháp từ ảnh nguồn' });
     } finally {
       setBusy(false);
     }
   };
 
   const generateVariants = async () => {
-    if (!activeSource?.dataUrl || activeSource.kind !== 'image') {
-      setNotice({ tone: 'error', text: 'Chọn ảnh nguồn trước' });
+    if (!activeSource?.dataUrl) {
+      setNotice({ tone: 'error', text: 'Chọn ảnh nguồn hoặc playable HTML trước' });
       return;
     }
 
@@ -1417,7 +1561,9 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           imageDataUrl: activeSource.dataUrl,
-          prompt: settings.prompt,
+          prompt: localizedPrompt,
+          hasBrandAssetOverlay: Boolean(settings.brandAssetDataUrl),
+          referenceMode: activeSource.kind === 'html' ? 'playable-import' : 'image',
           count: targetVariantCount,
           provider: settings.aiProvider,
           model: aiProviderModelMap[settings.aiProvider],
@@ -1536,7 +1682,9 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         ...variant,
         hotspot: hotspotFromPlayablePlan(plan),
         plan,
-        settings: layerFromPlayablePlan(plan, settings.prompt || variant.revisedPrompt || ''),
+        settings: settings.brandAssetDataUrl
+          ? attachBrandAssetToLayer(layerFromPlayablePlan(plan, localizedPrompt || variant.revisedPrompt || ''), settings.brandAssetDataUrl, settings.brandAssetName)
+          : layerFromPlayablePlan(plan, localizedPrompt || variant.revisedPrompt || ''),
       };
     });
 
@@ -1558,7 +1706,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
 
   const analyzeVariantPlan = async (variant: PlayableVariant, hotspot: Hotspot, count = variants.length || targetVariantCount) => {
     if (!settings.useAiAnalyze || !activeAiReady) {
-      return heuristicPlanFromHotspot(hotspot, variant.index, settings.prompt || variant.revisedPrompt || '');
+      return heuristicPlanFromHotspot(hotspot, variant.index, localizedPrompt || variant.revisedPrompt || '');
     }
 
     try {
@@ -1570,7 +1718,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         },
         body: JSON.stringify({
           imageDataUrl: variant.dataUrl,
-          prompt: settings.prompt || variant.revisedPrompt || '',
+          prompt: localizedPrompt || variant.revisedPrompt || '',
           index: variant.index,
           count,
           hotspot,
@@ -1580,7 +1728,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
       if (!response.ok || !payload.plan) throw new Error(payload.error || `Analyze failed (${response.status})`);
       return payload.plan as NonNullable<PlayableVariant['plan']>;
     } catch {
-      return heuristicPlanFromHotspot(hotspot, variant.index, settings.prompt || variant.revisedPrompt || '');
+      return heuristicPlanFromHotspot(hotspot, variant.index, localizedPrompt || variant.revisedPrompt || '');
     }
   };
 
@@ -1617,12 +1765,17 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
       const html = await exportVariantHtml(variant, network);
       folder.file(`${safeName}_${network}.html`, html);
     }
+    const gif = await buildVariantPreviewGif(variant, {
+      orientation: settings.orientation,
+      imageFit: activeImageFit,
+    });
+    folder.file(getVariantPreviewGifName(variant.name), gif);
   };
 
   const exportSelected = async () => {
     if (selectedVariant) {
       setBusy(true);
-      setNotice({ tone: 'busy', text: 'Đang đóng gói 5 HTML network cho biến thể đang chọn' });
+      setNotice({ tone: 'busy', text: 'Đang đóng gói 5 HTML network và 1 GIF preview cho biến thể đang chọn' });
       try {
         const JSZip = (await import('jszip')).default;
         const zip = new JSZip();
@@ -1631,9 +1784,16 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
           const html = await exportVariantHtml(selectedVariant, network);
           zip.file(`${safeName}_${network}.html`, html);
         }
+        const gif = await buildVariantPreviewGif(selectedVariant, {
+          orientation: settings.orientation,
+          imageFit: activeImageFit,
+        });
+        zip.file(getVariantPreviewGifName(selectedVariant.name), gif);
         const blob = await zip.generateAsync({ type: 'blob' });
-        downloadBlob(`${safeName}_5_networks.zip`, blob, 'application/zip');
-        setNotice({ tone: 'ok', text: `Đã xuất 5 network cho ${selectedVariant.name}` });
+        downloadBlob(`${safeName}_5_networks_plus_gif.zip`, blob, 'application/zip');
+        setNotice({ tone: 'ok', text: `Đã xuất 5 HTML và 1 GIF cho ${selectedVariant.name}` });
+      } catch (error) {
+        setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Export GIF thất bại' });
       } finally {
         setBusy(false);
       }
@@ -1678,7 +1838,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
     }
 
     setBusy(true);
-    setNotice({ tone: 'busy', text: 'Đang đóng gói HTML' });
+    setNotice({ tone: 'busy', text: 'Đang đóng gói HTML và GIF preview' });
 
     try {
       const JSZip = (await import('jszip')).default;
@@ -1687,10 +1847,10 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         await addVariantNetworkFiles(zip, variant);
       }
       const blob = await zip.generateAsync({ type: 'blob' });
-      downloadBlob(`${safeFileName(settings.name)}_${variants.length}_playables_5_networks.zip`, blob, 'application/zip');
-      setNotice({ tone: 'ok', text: `Đã xuất ZIP ${variants.length} playable` });
+      downloadBlob(`${safeFileName(settings.name)}_${variants.length}_playables_5_networks_plus_gif.zip`, blob, 'application/zip');
+      setNotice({ tone: 'ok', text: `Đã xuất ZIP ${variants.length} playable kèm GIF preview` });
     } catch (error) {
-      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Export ZIP tháº¥t báº¡i' });
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Export ZIP thất bại' });
     } finally {
       setBusy(false);
     }
@@ -1912,7 +2072,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
   const layerStackSummary = selectedVariant ? `V${selectedVariant.index} · ${visibleLayerCount}` : activeSource?.kind === 'html' ? `HTML · ${visibleLayerCount}` : 'Chưa có biến thể';
 
   const moveLayer = useCallback(
-    (variantId: string, layer: LayerTarget, x: number, y: number, assetId?: string) => {
+    (variantId: string, layer: LayerTarget, x: number, y: number, assetId?: string, scanStyle?: ScanStyle | null) => {
       const currentLayer = normalizeLayerSettings(variants.find((variant) => variant.id === variantId)?.settings || defaultLayerSettings);
       setSelectedVariantId(variantId);
       setSelectedLayer(layer);
@@ -1927,8 +2087,20 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         );
       }
       if (layer === 'scan') {
+        const scanPatch: Partial<LayerSettings> = {
+          scanX: x,
+          scanY: y,
+          injectScan: true,
+          layerOrder: ensureLayerInOrder(getLayerOrder(currentLayer), 'scan'),
+          ...(scanStyle
+            ? {
+                scanStyle,
+                scanAnimationName: getScanAnimationLabel(scanStyle),
+              }
+            : {}),
+        };
         updateLayer(
-          buildScanCompanionPatch(currentLayer, { scanX: x, scanY: y, injectScan: true, layerOrder: ensureLayerInOrder(getLayerOrder(currentLayer), 'scan') }),
+          buildScanCompanionPatch(currentLayer, scanPatch),
           variantId,
           'scan',
         );
@@ -2202,7 +2374,13 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                   <span className="source-icon">{source.kind === 'image' ? <ImagePlus size={16} /> : <FileCode2 size={16} />}</span>
                   <span className="source-meta">
                     <strong>{source.name}</strong>
-                    <small>{source.kind === 'image' ? `${source.width}x${source.height}` : 'HTML playable'}</small>
+                    <small>
+                      {source.kind === 'image'
+                        ? `${source.width}x${source.height}`
+                        : source.dataUrl
+                          ? `HTML playable · ${source.width || 0}x${source.height || 0}`
+                          : 'HTML playable · chưa có frame AI'}
+                    </small>
                   </span>
                   <SourceState source={source} />
                   <span
@@ -2339,18 +2517,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                     className={`asset-tile ${isActive ? 'active' : ''}`}
                     onDragStart={(event) => {
                       if (scanLibraryPreset) {
-                        setLayerDragData(event, 'scan');
-                        setSelectedLayer('scan');
-                        updateLayer(
-                          {
-                            scanStyle: scanLibraryPreset.scanStyle,
-                            scanAnimationName: getScanAnimationLabel(scanLibraryPreset.scanStyle),
-                            injectScan: true,
-                            layerOrder: ensureLayerInOrder(getLayerOrder(activeLayer), 'scan'),
-                          },
-                          undefined,
-                          'scan',
-                        );
+                        setLayerDragData(event, 'scan', undefined, scanLibraryPreset.scanStyle);
                         return;
                       }
                       setLayerDragData(event, 'asset', asset.id);
@@ -2452,7 +2619,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                 <Crosshair size={16} />
                 Auto plan
               </button>
-              <button className="primary-button" type="button" onClick={generateVariants} disabled={!activeSource || activeSource.kind !== 'image' || busy || !activeAiReady}>
+              <button className="primary-button" type="button" onClick={generateVariants} disabled={!activeSource?.dataUrl || busy || !activeAiReady}>
                 {busy ? <Loader2 className="spin" size={16} /> : <WandSparkles size={16} />}
                 Create {targetVariantCount}
               </button>
@@ -2484,7 +2651,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                 selectedLayer={selectedLayer}
                 onSelect={() => setSelectedVariantId(variant.id)}
                 onLayerSelect={setSelectedLayer}
-                onLayerDrop={(layer, x, y, assetId) => moveLayer(variant.id, layer, x, y, assetId)}
+                onLayerDrop={(layer, x, y, assetId, scanStyle) => moveLayer(variant.id, layer, x, y, assetId, scanStyle)}
                 onLayerPatch={(layer, partial) => patchPreviewLayer(variant.id, layer, partial)}
                 onFrameMetricsChange={variant.id === selectedVariant?.id ? setSelectedPreviewMetrics : undefined}
               />
@@ -2583,7 +2750,60 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
           <label className="field">
             <span>Mô tả</span>
             <textarea rows={5} value={settings.prompt} onChange={(event) => setProjectSetting('prompt', event.target.value)} />
+            <small className="field-help">
+              Mặc định ảnh nền sẽ xóa hết text trong ảnh. Nếu muốn giữ, ghi rõ kiểu `giữ 1 headline chính`; còn `tay animation kéo qua lại`, `tap CTA`, `scan face` sẽ được hiểu là overlay runtime.
+            </small>
           </label>
+          <label className="field">
+            <span>Ngôn ngữ localize</span>
+            <select value={settings.locale} onChange={(event) => setProjectSetting('locale', event.target.value as ProjectSettings['locale'])}>
+              {contentLocaleOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <small className="field-help">
+              Localize CTA, cue, và mọi headline/text được giữ lại trong ảnh. Nếu muốn localize text nằm trong ảnh, hãy ghi rõ kiểu `giữ 1 headline chính`. `Auto from prompt` sẽ chỉ đổi ngôn ngữ khi prompt tự ghi rõ.
+            </small>
+          </label>
+          <input
+            ref={brandAssetInputRef}
+            type="file"
+            accept="image/*"
+            hidden
+            onChange={(event) => void importBrandAsset(event.target.files)}
+          />
+          <div className="field brand-asset-field">
+            <span>Logo / biểu tượng</span>
+            <div className="brand-asset-row">
+              {settings.brandAssetDataUrl ? (
+                <img className="brand-asset-preview" src={settings.brandAssetDataUrl} alt={settings.brandAssetName || 'Brand asset'} />
+              ) : (
+                <span className="brand-asset-placeholder">
+                  <ImagePlus size={16} />
+                </span>
+              )}
+              <div className="brand-asset-copy">
+                <strong>{settings.brandAssetName || 'Chưa có logo/icon'}</strong>
+                <small>
+                  {settings.brandAssetDataUrl
+                    ? 'Đang dùng asset layer để hiện logo/icon này trong preview và file xuất. AI generate cũng sẽ tránh vẽ lặp lại logo này vào ảnh nền.'
+                    : 'Tải logo hoặc biểu tượng PNG/JPG/SVG/WEBP. Sau khi thêm, bạn có thể kéo vị trí ở layer Asset và AI generate sẽ tránh vẽ trùng logo trong ảnh nền.'}
+                </small>
+              </div>
+            </div>
+            <div className="brand-asset-actions">
+              <button className="secondary-button" type="button" onClick={() => brandAssetInputRef.current?.click()}>
+                <Upload size={15} />
+                {settings.brandAssetDataUrl ? 'Thay logo/icon' : 'Tải logo/icon'}
+              </button>
+              <button className="secondary-button" type="button" onClick={clearBrandAsset} disabled={!settings.brandAssetDataUrl}>
+                <Trash2 size={15} />
+                Xóa logo/icon
+              </button>
+            </div>
+          </div>
           <div className="section-title compact">
             <h3>Liên kết store</h3>
             <span>{storeRoutingMeta[settings.storeRoutingMode].label}</span>
@@ -2922,6 +3142,15 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
 
           {selectedLayer === 'asset' && (
             <fieldset className="control-stack" disabled={selectedLayerLocked}>
+              {layerForControls.customAssetDataUrl && (
+                <div className="asset-upload-note">
+                  <img className="asset-upload-note-preview" src={layerForControls.customAssetDataUrl} alt={layerForControls.customAssetName || 'Brand asset'} />
+                  <div>
+                    <strong>{layerForControls.customAssetName || 'Logo / biểu tượng'}</strong>
+                    <small>Asset upload đang ghi đè icon preset bên dưới. Bạn vẫn có thể kéo vị trí và đổi size như bình thường.</small>
+                  </div>
+                </div>
+              )}
               <label className="field">
                 <span>Loại asset</span>
                 <select value={layerForControls.assetId} onChange={(event) => updateLayer({ assetId: event.target.value, injectAsset: true })}>
@@ -3103,16 +3332,22 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         <section className="panel-section">
           <div className="section-title">
             <h3>Thao tác</h3>
-            <span>{selectedVariant || activeSource?.kind === 'html' ? '5 network' : `${variants.length * networkExportTargets.length}`}</span>
+            <span>
+              {selectedVariant
+                ? '5 HTML + 1 GIF'
+                : activeSource?.kind === 'html'
+                  ? '5 HTML'
+                  : `${variants.length * networkExportTargets.length} HTML + ${variants.length} GIF`}
+            </span>
           </div>
           <div className="action-grid">
             <button className="secondary-button wide" type="button" onClick={exportSelected} disabled={busy || (!selectedVariant && !activeSource?.html)}>
               <Download size={16} />
-              Xuất 5 HTML
+              {selectedVariant ? 'Xuất HTML + GIF' : 'Xuất 5 HTML'}
             </button>
             <button className="secondary-button wide" type="button" onClick={exportZip} disabled={busy || !variants.length}>
               <Archive size={16} />
-              {`ZIP x${variants.length * networkExportTargets.length}`}
+              {`ZIP HTML + GIF x${variants.length}`}
             </button>
             <button className="primary-button wide" type="button" onClick={() => void saveProject({ force: true })} disabled={busy || projectSaving || !appScopedEditor || !appId || !hasProjectContent}>
               <Save size={16} />
@@ -3232,7 +3467,7 @@ function PreviewCard({
   selectedLayer: LayerTarget;
   onSelect: () => void;
   onLayerSelect: (layer: LayerTarget) => void;
-  onLayerDrop: (layer: LayerTarget, x: number, y: number, assetId?: string) => void;
+  onLayerDrop: (layer: LayerTarget, x: number, y: number, assetId?: string, scanStyle?: ScanStyle | null) => void;
   onLayerPatch: (layer: LayerTarget, partial: Partial<LayerSettings>) => void;
   onFrameMetricsChange?: (metrics: FrameMetrics | null) => void;
 }) {
@@ -3283,7 +3518,7 @@ function PreviewCard({
       return (
         <span
           key="asset"
-          className={`preview-asset asset-motion-${getVisualAsset(layer.assetId).motion} ${selectedLayer === 'asset' && selected ? 'active' : ''}`}
+          className={`preview-asset ${layer.customAssetDataUrl ? 'preview-asset-custom' : `asset-motion-${getVisualAsset(layer.assetId).motion}`} ${selectedLayer === 'asset' && selected ? 'active' : ''}`}
           style={{
             left: `${layer.assetX}%`,
             top: `${layer.assetY}%`,
@@ -3295,7 +3530,11 @@ function PreviewCard({
           }}
           onPointerDown={(event) => startDrag('asset', event)}
         >
-          <VisualAssetIcon assetId={layer.assetId} />
+          {layer.customAssetDataUrl ? (
+            <img className="preview-asset-media" src={layer.customAssetDataUrl} alt={layer.customAssetName || 'Brand asset'} />
+          ) : (
+            <VisualAssetIcon assetId={layer.assetId} />
+          )}
         </span>
       );
     }
@@ -3546,7 +3785,7 @@ function PreviewCard({
     window.addEventListener('pointerup', end, { once: true });
   };
 
-  const placeLayer = (target: LayerTarget, clientX: number, clientY: number, assetId?: string) => {
+  const placeLayer = (target: LayerTarget, clientX: number, clientY: number, assetId?: string, scanStyle?: ScanStyle | null) => {
     const surface = frameRef.current;
     if (!surface) return;
     const point = getPointInElement(surface, clientX, clientY);
@@ -3558,7 +3797,7 @@ function PreviewCard({
       onLayerPatch('scan', { scanOffsetX: offset.x, scanOffsetY: offset.y, injectScan: true });
       return;
     }
-    onLayerDrop(target, point.x, point.y, assetId);
+    onLayerDrop(target, point.x, point.y, assetId, scanStyle);
   };
 
   return (
@@ -3574,8 +3813,9 @@ function PreviewCard({
           onDrop={(event) => {
             event.preventDefault();
             const assetId = getAssetDragData(event);
+            const scanStyle = getScanStyleDragData(event);
             const layerTarget = assetId ? 'asset' : getLayerDragData(event) || selectedLayer;
-            placeLayer(layerTarget, event.clientX, event.clientY, assetId);
+            placeLayer(layerTarget, event.clientX, event.clientY, assetId, scanStyle);
           }}
         >
           <img className="creative-backdrop" src={variant.dataUrl} alt="" />
@@ -3752,6 +3992,8 @@ function normalizeLayerSettings(settings: Partial<LayerSettings>): LayerSettings
     ...merged,
     scanStyle,
     scanAnimationName,
+    customAssetDataUrl: typeof merged.customAssetDataUrl === 'string' ? merged.customAssetDataUrl : '',
+    customAssetName: typeof merged.customAssetName === 'string' ? merged.customAssetName : '',
     scanColor: normalizeHexColor(merged.scanColor, '#7c3cff'),
     ctaColorFrom: normalizeHexColor(merged.ctaColorFrom, '#ff9a2f'),
     ctaColorTo: normalizeHexColor(merged.ctaColorTo, '#f45100'),
@@ -3996,13 +4238,8 @@ function getLayerSelectionMetrics(
   };
 }
 
-function resolveDragTargetForPointer(target: LayerTarget, layer: LayerSettings, artboard: HTMLElement, clientX: number, clientY: number) {
-  if (target === 'image' || target === 'cta' || target === 'hand' || target === 'text' || !layer.showCta) return target;
-  const cta = artboard.querySelector<HTMLElement>('.preview-cta');
-  if (!cta) return target;
-  const rect = cta.getBoundingClientRect();
-  const insideCta = clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
-  return insideCta ? 'cta' : target;
+function resolveDragTargetForPointer(target: LayerTarget, _layer: LayerSettings, _artboard: HTMLElement, _clientX: number, _clientY: number) {
+  return target;
 }
 
 function getScanAnimationVars(layer: LayerSettings) {
@@ -4163,6 +4400,179 @@ function defaultHotspot(): Hotspot {
   return { x: 50, y: 72, confidence: 0.28, reason: 'fallback' };
 }
 
+async function buildPlayableHtmlSource(file: File, orientation: ProjectSettings['orientation']): Promise<SourceItem> {
+  const analyzed = await analyzePlayableImportFile(file).catch(async () => ({
+    documentHtml: await readFileAsText(file),
+    convertedFromWrapper: false,
+  }));
+  const html = analyzed.documentHtml || (await readFileAsText(file));
+
+  try {
+    const captured = await capturePlayableImportFrame(html, orientation);
+    const hotspot = await detectImageHotspot(captured.dataUrl).catch(() => defaultHotspot());
+    return {
+      id: uid(),
+      name: file.name,
+      kind: 'html',
+      status: 'ready',
+      html,
+      dataUrl: captured.dataUrl,
+      width: captured.width,
+      height: captured.height,
+      hotspot,
+      createdAt: Date.now(),
+    };
+  } catch (error) {
+    return {
+      id: uid(),
+      name: file.name,
+      kind: 'html',
+      status: 'error',
+      html,
+      error: error instanceof Error ? error.message : 'Không chụp được frame từ playable HTML.',
+      createdAt: Date.now(),
+    };
+  }
+}
+
+async function analyzePlayableImportFile(file: File): Promise<{ documentHtml: string; convertedFromWrapper: boolean }> {
+  const form = new FormData();
+  form.append('file', file);
+  const response = await fetch('/api/playables/analyze', { method: 'POST', body: form });
+  const payload = (await response.json().catch(() => ({}))) as {
+    documentHtml?: string;
+    convertedFromWrapper?: boolean;
+    error?: string;
+  };
+  if (!response.ok || !payload.documentHtml) {
+    throw new Error(payload.error || 'Không phân tích được playable HTML.');
+  }
+  return {
+    documentHtml: payload.documentHtml,
+    convertedFromWrapper: Boolean(payload.convertedFromWrapper),
+  };
+}
+
+function capturePlayableImportFrame(html: string, orientation: ProjectSettings['orientation']) {
+  return new Promise<{ dataUrl: string; width: number; height: number; sourceKind: string }>((resolve, reject) => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') {
+      reject(new Error('Capture playable chỉ chạy trong trình duyệt.'));
+      return;
+    }
+
+    const targetWidth = orientation === 'landscape' ? 1280 : 720;
+    const targetHeight = orientation === 'landscape' ? 720 : 1280;
+    const previewWidth = orientation === 'landscape' ? 640 : 360;
+    const previewHeight = orientation === 'landscape' ? 360 : 640;
+    const requestId = uid();
+    const frame = document.createElement('iframe');
+    const blobUrl = URL.createObjectURL(
+      new Blob([injectPlayableImportCaptureBridge(html)], { type: 'text/html;charset=utf-8' }),
+    );
+
+    let timeout = 0;
+
+    const cleanup = () => {
+      if (timeout) window.clearTimeout(timeout);
+      window.removeEventListener('message', onMessage);
+      URL.revokeObjectURL(blobUrl);
+      frame.remove();
+    };
+
+    const onMessage = (event: MessageEvent) => {
+      if (event.source !== frame.contentWindow || event.data?.type !== 'playable-import-capture-result' || event.data?.requestId !== requestId) {
+        return;
+      }
+      cleanup();
+      if (event.data.error) {
+        reject(new Error(String(event.data.error)));
+        return;
+      }
+      resolve({
+        dataUrl: String(event.data.dataUrl || ''),
+        width: Number(event.data.width || targetWidth),
+        height: Number(event.data.height || targetHeight),
+        sourceKind: String(event.data.sourceKind || 'preview'),
+      });
+    };
+
+    timeout = window.setTimeout(() => {
+      cleanup();
+      reject(new Error('Playable HTML quá thời gian khi chụp frame.'));
+    }, 10000);
+
+    frame.setAttribute(
+      'sandbox',
+      'allow-scripts allow-same-origin allow-forms allow-pointer-lock allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads',
+    );
+    frame.setAttribute('aria-hidden', 'true');
+    frame.style.position = 'fixed';
+    frame.style.left = '-200vw';
+    frame.style.top = '0';
+    frame.style.width = `${previewWidth}px`;
+    frame.style.height = `${previewHeight}px`;
+    frame.style.opacity = '0';
+    frame.style.pointerEvents = 'none';
+    frame.style.border = '0';
+
+    window.addEventListener('message', onMessage);
+    frame.addEventListener(
+      'load',
+      () => {
+        window.setTimeout(() => {
+          frame.contentWindow?.postMessage({ type: 'playable-import-capture', requestId, targetWidth, targetHeight }, '*');
+        }, 1100);
+      },
+      { once: true },
+    );
+
+    document.body.appendChild(frame);
+    frame.src = blobUrl;
+  });
+}
+
+function injectPlayableImportCaptureBridge(html: string) {
+  const script = `<script id="playable-import-preview-bridge">
+(function(){
+  function captureFrame(requestId,targetWidth,targetHeight){
+    try{
+      var width=Math.max(256,Math.min(1600,Number(targetWidth)||720));
+      var height=Math.max(256,Math.min(2200,Number(targetHeight)||1280));
+      var nodes=Array.prototype.slice.call(document.querySelectorAll("canvas,video,img")).filter(function(node){
+        var rect=node.getBoundingClientRect(),style=getComputedStyle(node);
+        return rect.width>12&&rect.height>12&&style.display!=="none"&&style.visibility!=="hidden"&&Number(style.opacity)!==0;
+      });
+      nodes.sort(function(a,b){
+        var ar=a.getBoundingClientRect(),br=b.getBoundingClientRect();
+        return br.width*br.height-ar.width*ar.height;
+      });
+      var source=nodes[0],sourceKind="preview",sourceWidth=0,sourceHeight=0;
+      if(!source)throw new Error("No visible canvas, video, or image found.");
+      if(source.tagName==="CANVAS"){sourceKind="canvas";sourceWidth=source.width;sourceHeight=source.height;}
+      else if(source.tagName==="VIDEO"){sourceKind="video";sourceWidth=source.videoWidth;sourceHeight=source.videoHeight;}
+      else{sourceKind="image";sourceWidth=source.naturalWidth||source.width;sourceHeight=source.naturalHeight||source.height;}
+      if(!sourceWidth||!sourceHeight)throw new Error("Preview frame is not ready.");
+      var canvas=document.createElement("canvas"),ctx=canvas.getContext("2d");
+      canvas.width=width;canvas.height=height;
+      ctx.fillStyle="#fff";ctx.fillRect(0,0,width,height);
+      var scale=Math.max(width/sourceWidth,height/sourceHeight);
+      var drawWidth=sourceWidth*scale,drawHeight=sourceHeight*scale;
+      ctx.drawImage(source,(width-drawWidth)/2,(height-drawHeight)/2,drawWidth,drawHeight);
+      window.parent.postMessage({type:"playable-import-capture-result",requestId:requestId,dataUrl:canvas.toDataURL("image/jpeg",.9),sourceKind:sourceKind,width:width,height:height},"*");
+    }catch(error){
+      window.parent.postMessage({type:"playable-import-capture-result",requestId:requestId,error:error&&error.message||String(error)},"*");
+    }
+  }
+  addEventListener("message",function(event){
+    if(event.data&&event.data.type==="playable-import-capture"){
+      captureFrame(event.data.requestId,event.data.targetWidth,event.data.targetHeight);
+    }
+  });
+})();
+</script>`;
+  return /<\/body>/i.test(html) ? html.replace(/<\/body>/i, `${script}</body>`) : `${html}${script}`;
+}
+
 async function optimizeImageForAppLovin(image: ExportImageInput, orientation: ProjectSettings['orientation']): Promise<ExportImageInput> {
   const maxFrame = orientation === 'landscape' ? { width: 1280, height: 720 } : { width: 720, height: 1280 };
   const source = await loadImageForCanvas(image.dataUrl).catch(() => null);
@@ -4261,8 +4671,29 @@ function buildDateProjectName(date = new Date()) {
   return `Project ${year}-${month}-${day} ${hour}-${minute}`;
 }
 
-function buildProjectAutosaveSnapshot({
-  projectId,
+type ProjectSavePayload = {
+  id: string;
+  appId?: string;
+  name: string;
+  prompt: string;
+  settings: ProjectSettings;
+  sourceImageDataUrl: string;
+  variants: Array<{
+    id: string;
+    sourceId: string;
+    index: number;
+    name: string;
+    dataUrl: string;
+    width: number;
+    height: number;
+    revisedPrompt: string;
+    hotspot: Hotspot;
+    settings: LayerSettings;
+  }>;
+};
+
+function buildProjectSavePayload({
+  id,
   appId,
   name,
   prompt,
@@ -4270,23 +4701,79 @@ function buildProjectAutosaveSnapshot({
   sourceImageDataUrl,
   variants,
 }: {
-  projectId: string;
+  id: string;
   appId: string;
   name: string;
   prompt: string;
   settings: ProjectSettings;
   sourceImageDataUrl: string;
   variants: PlayableVariant[];
-}) {
-  return JSON.stringify({
-    projectId,
-    appId,
-    name,
-    prompt,
-    settings,
-    sourceImageDataUrl,
-    variants,
-  });
+}): ProjectSavePayload {
+  return {
+    id: safeString(id),
+    appId: safeString(appId) || undefined,
+    name: safeString(name),
+    prompt: safeString(prompt),
+    settings: toJsonSafe(normalizeProjectSettings(settings)),
+    sourceImageDataUrl: safeString(sourceImageDataUrl),
+    variants: variants.map((variant, index) => ({
+      id: safeString(variant.id) || `variant-${index + 1}`,
+      sourceId: safeString(variant.sourceId),
+      index: safeInteger(variant.index, index + 1),
+      name: safeString(variant.name) || `Variant ${index + 1}`,
+      dataUrl: safeString(variant.dataUrl),
+      width: safeNumber(variant.width),
+      height: safeNumber(variant.height),
+      revisedPrompt: safeString(variant.revisedPrompt),
+      hotspot: toJsonSafe({
+        x: clamp(safeNumber(variant.hotspot?.x, 50), 0, 100),
+        y: clamp(safeNumber(variant.hotspot?.y, 72), 0, 100),
+        confidence: clamp(safeNumber(variant.hotspot?.confidence, 0.28), 0, 1),
+        ...(typeof variant.hotspot?.reason === 'string' ? { reason: variant.hotspot.reason } : {}),
+      }),
+      settings: toJsonSafe(normalizeLayerSettings(variant.settings)),
+    })),
+  };
+}
+
+function buildProjectAutosaveSnapshot(payload: ProjectSavePayload) {
+  return JSON.stringify(payload);
+}
+
+function toJsonSafe<T>(value: T, seen = new WeakSet<object>(), depth = 0): T {
+  if (value === null || value === undefined) return value;
+  if (typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') return (Number.isFinite(value) ? value : 0) as T;
+  if (depth > 24) return null as T;
+  if (Array.isArray(value)) {
+    return value.map((item) => toJsonSafe(item, seen, depth + 1)) as T;
+  }
+  if (typeof value === 'object') {
+    const objectValue = value as Record<string, unknown>;
+    if (seen.has(objectValue)) return null as T;
+    seen.add(objectValue);
+    const plain: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(objectValue)) {
+      if (typeof entry === 'function' || typeof entry === 'symbol' || entry === undefined) continue;
+      plain[key] = toJsonSafe(entry, seen, depth + 1);
+    }
+    seen.delete(objectValue);
+    return plain as T;
+  }
+  return null as T;
+}
+
+function safeString(value: unknown) {
+  return typeof value === 'string' ? value : '';
+}
+
+function safeNumber(value: unknown, fallback = 0) {
+  const next = Number(value);
+  return Number.isFinite(next) ? next : fallback;
+}
+
+function safeInteger(value: unknown, fallback = 0) {
+  return Math.max(0, Math.round(safeNumber(value, fallback)));
 }
 
 function formatProjectSaveTime(value: number) {

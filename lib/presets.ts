@@ -68,6 +68,8 @@ export const defaultLayerSettings: LayerSettings = {
   assetRotation: 0,
   assetLocked: false,
   assetSpeed: 1200,
+  customAssetDataUrl: '',
+  customAssetName: '',
   injectAsset: false,
 };
 
