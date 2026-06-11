@@ -2191,7 +2191,7 @@ img {
 .workspace {
   min-width: 0;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
   gap: 14px;
   padding: 20px;
   overflow: hidden;
@@ -2320,6 +2320,59 @@ img {
 
 .sidebar-section {
   margin-top: 14px;
+  padding: 12px;
+}
+
+.action-panel-section {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  background: linear-gradient(180deg, rgba(255, 255, 255, .84) 0%, var(--surface) 18%);
+  backdrop-filter: blur(8px);
+}
+
+.panel-disclosure {
+  margin-top: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow-subtle);
+  overflow: hidden;
+}
+
+.panel-disclosure summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+}
+
+.panel-disclosure summary::-webkit-details-marker {
+  display: none;
+}
+
+.panel-disclosure summary span {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.panel-disclosure summary small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.panel-disclosure[open] summary {
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-container);
+}
+
+.panel-disclosure-body {
+  display: grid;
+  gap: 12px;
   padding: 12px;
 }
 
@@ -3156,6 +3209,30 @@ img {
   justify-content: flex-start;
 }
 
+.toolbar-group {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.toolbar-group-actions {
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+}
+
+.toolbar-group-label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
 .fit-toggle {
   min-height: 38px;
   display: inline-flex;
@@ -3166,6 +3243,34 @@ img {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
+}
+
+.editor-workflow-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 0;
+  position: relative;
+  z-index: 1;
+}
+
+.editor-workflow-chip {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.editor-workflow-chip.ready {
+  border-color: #b8efd9;
+  background: #eefbf5;
+  color: #0b8f61;
 }
 
 .fit-toggle button {
@@ -6103,6 +6208,11 @@ img {
 }
 
 .project-hub-summary {
+  display: grid;
+  gap: 10px;
+}
+
+.project-hub-summary-copy {
   display: flex;
   align-items: baseline;
   gap: 10px;
@@ -6118,6 +6228,12 @@ img {
   font-size: 12px;
   font-weight: 800;
   text-transform: uppercase;
+}
+
+.project-hub-summary small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .project-hub-search {
@@ -6181,21 +6297,17 @@ img {
 
 .project-grid {
   display: grid;
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 14px;
 }
 
 .project-card {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 14px;
-  padding: 12px 14px;
+  position: relative;
+  padding: 52px 12px 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
   box-shadow: var(--shadow-subtle);
-  text-decoration: none;
-  color: inherit;
   transition: transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease;
 }
 
@@ -6205,24 +6317,15 @@ img {
   box-shadow: var(--shadow-elevated);
 }
 
-.project-card:focus-visible {
-  outline: 3px solid rgba(245, 158, 11, .34);
-  outline-offset: 2px;
-}
-
 .project-card-preview {
-  flex: 0 0 auto;
   display: grid;
-  place-items: center;
-  padding: 6px;
-  border-radius: 8px;
-  background: var(--surface-container);
+  gap: 10px;
 }
 
 .project-card-canvas {
   display: grid;
   place-items: center;
-  width: 56px;
+  width: 100%;
   aspect-ratio: 9 / 16;
   border: 1px solid rgba(37, 99, 235, .12);
   border-radius: 8px;
@@ -6231,19 +6334,39 @@ img {
   font-size: 17px;
   font-weight: 800;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .72);
+  overflow: hidden;
+}
+
+.project-card-canvas img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 
 .project-card-main {
   min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 14px;
+  width: 100%;
+  display: grid;
+  gap: 12px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.project-card-main:focus-visible {
+  outline: 3px solid rgba(245, 158, 11, .34);
+  outline-offset: 2px;
+  border-radius: 8px;
 }
 
 .project-card-body {
   min-width: 0;
   display: grid;
-  gap: 6px;
+  gap: 8px;
 }
 
 .project-card-title-row {
@@ -6251,7 +6374,6 @@ img {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
 }
 
 .project-card-body strong {
@@ -6263,7 +6385,15 @@ img {
   white-space: nowrap;
 }
 
-.project-card-app {
+.project-card-preview-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.project-card-app,
+.project-card-count {
   display: inline-flex;
   align-items: center;
   min-height: 24px;
@@ -6273,6 +6403,17 @@ img {
   color: var(--primary-dark);
   font-size: 11px;
   font-weight: 800;
+}
+
+.project-card-count {
+  background: var(--surface-container);
+  color: var(--muted);
+}
+
+.project-card-workspace {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .project-card-date,
@@ -6290,14 +6431,16 @@ img {
 }
 
 .project-card-side {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 2;
   justify-content: flex-end;
   gap: 10px;
 }
 
 .project-card-link {
   gap: 6px;
-  min-height: 34px;
-  padding: 0 2px;
   color: var(--primary-dark);
   font-size: 13px;
   font-weight: 800;
@@ -6344,12 +6487,12 @@ img {
   }
 
   .project-card {
-    grid-template-columns: 1fr;
-    align-items: stretch;
+    padding-top: 52px;
   }
 
   .project-card-side {
-    justify-content: space-between;
+    top: 12px;
+    right: 12px;
   }
 
   .project-hub-search {

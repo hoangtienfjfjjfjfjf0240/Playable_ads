@@ -68,6 +68,7 @@ export function StudioDashboard() {
         if (!response.ok) {
           throw new Error(typeof payload?.error === 'string' ? payload.error : 'Không tải được thư viện project.');
         }
+
         if (galleryRequestRef.current === requestId) {
           setGallery(payload as StudioProjectGalleryPayload);
         }
@@ -123,14 +124,24 @@ export function StudioDashboard() {
   useEffect(() => {
     if (!accessToken || typeof window === 'undefined') return;
 
-    const shouldRefresh = window.sessionStorage.getItem('playable-dashboard-refresh');
-    if (!shouldRefresh) return;
+    const refreshFromEditor = () => void loadGallery(accessToken, { silent: true });
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') refreshFromEditor();
+    };
+    const onFocus = () => refreshFromEditor();
 
-    window.sessionStorage.removeItem('playable-dashboard-refresh');
-    const timer = window.setTimeout(() => {
-      void loadGallery(accessToken, { silent: true });
-    }, 120);
-    return () => window.clearTimeout(timer);
+    const shouldRefresh = window.sessionStorage.getItem('playable-dashboard-refresh');
+    if (shouldRefresh) {
+      window.sessionStorage.removeItem('playable-dashboard-refresh');
+      window.setTimeout(() => refreshFromEditor(), 120);
+    }
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('focus', onFocus);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('focus', onFocus);
+    };
   }, [accessToken, loadGallery]);
 
   const filteredProjects = useMemo(() => {
@@ -155,11 +166,7 @@ export function StudioDashboard() {
           password,
         });
         if (signUpError) throw signUpError;
-        setMessage(
-          data.session
-            ? 'Đã tạo tài khoản. Đang chuyển vào thư viện project.'
-            : 'Đã tạo tài khoản. Kiểm tra email rồi đăng nhập.',
-        );
+        setMessage(data.session ? 'Đã tạo tài khoản. Đang chuyển vào thư viện project.' : 'Đã tạo tài khoản. Kiểm tra email rồi đăng nhập.');
       } else {
         const { error: loginError } = await supabase.auth.signInWithPassword({
           email: email.trim(),
@@ -187,18 +194,16 @@ export function StudioDashboard() {
     void loadGallery(accessToken);
   }, [accessToken, loadGallery]);
 
-  const startNamedProject = useCallback(() => {
+  const startProject = useCallback(() => {
     if (!gallery?.defaultAppId) {
-      setError('Chưa có app mặc định để mở editor.');
+      setError('Không có app mặc định để mở editor.');
       return;
     }
-    if (!normalizedNewProjectName) {
-      setError('Nhập tên project trước khi bắt đầu.');
-      return;
-    }
+
+    const projectName = normalizedNewProjectName || buildAutoProjectName();
     setError('');
     setMessage('');
-    router.push(`/apps/${gallery.defaultAppId}?new=1&name=${encodeURIComponent(normalizedNewProjectName)}`);
+    router.push(`/apps/${gallery.defaultAppId}?new=1&name=${encodeURIComponent(projectName)}`);
   }, [gallery?.defaultAppId, normalizedNewProjectName, router]);
 
   const deleteProject = useCallback(
@@ -243,16 +248,8 @@ export function StudioDashboard() {
   if (sessionLoading) {
     return (
       <LoginShell>
-        <LoginCard
-          eyebrow="Phiên làm việc"
-          title="Đang kiểm tra đăng nhập"
-          description="Hệ thống đang xác nhận tài khoản hiện tại trước khi mở thư viện project."
-        >
-          <LoginStatus
-            icon={<Loader2 className="spin" size={18} />}
-            title="Đang kiểm tra tài khoản"
-            description="Thao tác này thường chỉ mất vài giây trên local."
-          />
+        <LoginCard eyebrow="Phiên làm việc" title="Đang kiểm tra đăng nhập" description="Hệ thống đang xác nhận tài khoản trước khi mở thư viện project.">
+          <LoginStatus icon={<Loader2 className="spin" size={18} />} title="Đang kiểm tra tài khoản" description="Thao tác này thường chỉ mất vài giây trên local." />
         </LoginCard>
       </LoginShell>
     );
@@ -266,8 +263,8 @@ export function StudioDashboard() {
           title={authMode === 'signup' ? 'Tạo tài khoản mới' : 'Vào Playable Studio'}
           description={
             authMode === 'signup'
-              ? 'Tạo tài khoản để quản lý app, project và batch theo đúng phạm vi của bạn.'
-              : 'Đăng nhập để mở project đã lưu và vào đúng editor của từng app.'
+              ? 'Tạo tài khoản để quản lý app, project và batch trong cùng một không gian làm việc.'
+              : 'Đăng nhập để mở lại project đã lưu và vào đúng editor của từng app.'
           }
           footer={
             <LoginFooterPrompt
@@ -337,7 +334,6 @@ export function StudioDashboard() {
                 {galleryLoading ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
                 {galleryLoading ? 'Đang tải...' : hasLoadError ? 'Thử tải lại' : 'Làm mới ngay'}
               </button>
-
               <button className="login-secondary-button" type="button" onClick={signOut}>
                 <LogOut size={15} />
                 Đăng xuất
@@ -367,7 +363,7 @@ export function StudioDashboard() {
         <div className="project-hub-copy">
           <span className="eyebrow">Thư viện project</span>
           <h1>Project của bạn</h1>
-          <p className="dashboard-subtitle">Mở lại project đã có và tiếp tục làm việc nhanh hơn.</p>
+          <p className="dashboard-subtitle">Mở lại project bằng thumbnail thật, hoặc vào editor ngay với tên tự động theo ngày giờ.</p>
         </div>
 
         <div className="dashboard-userbar project-hub-actions">
@@ -375,6 +371,11 @@ export function StudioDashboard() {
             {gallery.user.role === 'manager' ? <ShieldCheck size={14} /> : <UserRound size={14} />}
             {gallery.user.displayName}
           </span>
+
+          <button className="primary-button" type="button" onClick={startProject} disabled={!gallery.defaultAppId}>
+            <Plus size={16} />
+            Project mới
+          </button>
 
           <button className="secondary-button" type="button" onClick={signOut}>
             <LogOut size={15} />
@@ -388,27 +389,30 @@ export function StudioDashboard() {
 
       <section className="project-hub-toolbar">
         <div className="project-hub-summary">
-          <strong>{gallery.projects.length}</strong>
-          <span>project đã lưu</span>
+          <div className="project-hub-summary-copy">
+            <strong>{gallery.projects.length}</strong>
+            <span>project đã lưu</span>
+          </div>
+          <small>{filteredProjects.length === gallery.projects.length ? 'Toàn bộ thư viện đang hiển thị' : `${filteredProjects.length} project đang khớp bộ lọc`}</small>
         </div>
 
         <form
           className="project-create-form"
           onSubmit={(event) => {
             event.preventDefault();
-            startNamedProject();
+            startProject();
           }}
         >
-          <label className="project-create-input">
+          <label className="project-create-input project-create-input-wide">
             <input
               value={newProjectName}
               onChange={(event) => setNewProjectName(event.target.value)}
-              placeholder="Nhập tên project rồi mở editor..."
+              placeholder="Để trống để dùng tên tự động theo ngày giờ..."
             />
           </label>
-          <button className="primary-button" type="submit" disabled={!gallery.defaultAppId || !normalizedNewProjectName}>
+          <button className="primary-button" type="submit" disabled={!gallery.defaultAppId}>
             <Plus size={16} />
-            Tạo project
+            Mở editor
           </button>
         </form>
 
@@ -423,51 +427,39 @@ export function StudioDashboard() {
           filteredProjects.map((project) => {
             const href = `/apps/${project.appId}?projectId=${encodeURIComponent(project.id)}`;
             return (
-              <article
-                key={project.id}
-                className="project-card"
-                role="link"
-                tabIndex={0}
-                onClick={() => router.push(href)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault();
-                    router.push(href);
-                  }
-                }}
-              >
-                <div className="project-card-main">
+              <article key={project.id} className="project-card">
+                <button className="project-card-main" type="button" onClick={() => router.push(href)}>
                   <div className="project-card-preview" aria-hidden="true">
                     <div className="project-card-canvas">
-                      <span>{buildPreviewMonogram(project)}</span>
+                      {project.previewImageDataUrl ? <img src={project.previewImageDataUrl} alt="" /> : <span>{buildPreviewMonogram(project)}</span>}
+                    </div>
+                    <div className="project-card-preview-meta">
+                      <span className="project-card-app">{project.appName}</span>
+                      <span className="project-card-count">{formatVariantCount(project.variantCount)}</span>
                     </div>
                   </div>
 
                   <div className="project-card-body">
                     <div className="project-card-title-row">
                       <strong>{getDisplayProjectName(project)}</strong>
-                      <span className="project-card-app">{project.appName}</span>
                     </div>
+                    <span className="project-card-workspace">{project.workspaceName}</span>
                     <span className="project-card-date">
                       <CalendarDays size={14} />
                       Cập nhật {formatProjectDate(project.updatedAt)}
                     </span>
+                    <span className="project-card-link">
+                      Mở studio
+                      <ArrowUpRight size={15} />
+                    </span>
                   </div>
-                </div>
+                </button>
 
                 <div className="project-card-side">
-                  <span className="project-card-link">
-                    Mở studio
-                    <ArrowUpRight size={15} />
-                  </span>
                   <button
                     className="danger-button slim project-card-delete"
                     type="button"
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      void deleteProject(project.id);
-                    }}
+                    onClick={() => void deleteProject(project.id)}
                     disabled={deletingProjectId === project.id}
                     aria-label={`Xóa ${project.name}`}
                   >
@@ -480,7 +472,13 @@ export function StudioDashboard() {
         ) : (
           <div className="project-empty-state">
             <strong>{query.trim() ? 'Không có project phù hợp' : 'Chưa có project đã lưu'}</strong>
-            <p>{query.trim() ? 'Thử một từ khóa khác.' : 'Nhập tên project ở phía trên rồi mở editor để bắt đầu.'}</p>
+            <p>{query.trim() ? 'Thử một từ khóa khác.' : 'Bấm tạo project để vào editor ngay. Nếu không nhập tên, hệ thống sẽ tự đặt theo ngày giờ.'}</p>
+            {!query.trim() ? (
+              <button className="primary-button" type="button" onClick={startProject} disabled={!gallery.defaultAppId}>
+                <Plus size={16} />
+                Tạo project mới
+              </button>
+            ) : null}
           </div>
         )}
       </section>
@@ -492,7 +490,6 @@ function LoginShell({ children }: { children: ReactNode }) {
   return (
     <main className="login-shell">
       <section className="login-stage">{children}</section>
-
     </main>
   );
 }
@@ -525,7 +522,6 @@ function LoginCard({
       </div>
 
       <div className="login-card-body">{children}</div>
-
       {footer ? <div className="login-card-footer">{footer}</div> : null}
     </section>
   );
@@ -592,6 +588,21 @@ function buildPreviewMonogram(project: StudioProjectGalleryItem) {
 
 function normalizeProjectNameInput(value: string) {
   return value.replace(/\s+/g, ' ').trim();
+}
+
+function buildAutoProjectName() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = `${now.getMonth() + 1}`.padStart(2, '0');
+  const day = `${now.getDate()}`.padStart(2, '0');
+  const hours = `${now.getHours()}`.padStart(2, '0');
+  const minutes = `${now.getMinutes()}`.padStart(2, '0');
+  return `Project ${year}-${month}-${day} ${hours}-${minutes}`;
+}
+
+function formatVariantCount(value: number) {
+  if (!value) return 'Chưa có biến thể';
+  return `${value} biến thể`;
 }
 
 function formatProjectDate(value: string) {

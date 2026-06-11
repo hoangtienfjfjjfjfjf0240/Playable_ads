@@ -300,6 +300,8 @@ export interface StudioProjectGalleryItem {
   updatedAt: string;
   appName: string;
   workspaceName: string;
+  variantCount: number;
+  previewImageDataUrl: string;
 }
 
 export interface StudioAppSummary {
