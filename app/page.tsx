@@ -1,5 +1,5 @@
-import { StudioDashboard } from '../components/StudioDashboard';
+import { redirect } from 'next/navigation';
 
 export default function Home() {
-  return <StudioDashboard />;
+  redirect('/v2');
 }

@@ -1,5 +1,5 @@
-import { PlayableLayerEditor } from '../../components/PlayableLayerEditor';
+import { redirect } from 'next/navigation';
 
 export default function LayerEditorPage() {
-  return <PlayableLayerEditor />;
+  redirect('/v2/layer-editor');
 }

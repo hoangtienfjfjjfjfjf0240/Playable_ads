@@ -267,6 +267,15 @@ export interface ExportImageInput {
   height: number;
 }
 
+export interface ReferenceImageInput {
+  id: string;
+  name: string;
+  dataUrl: string;
+  width: number;
+  height: number;
+  createdAt: number;
+}
+
 export type StudioUserRole = 'manager' | 'editor';
 export type WorkspaceMemberRole = 'manager' | 'editor' | 'viewer';
 
@@ -363,6 +372,7 @@ export interface StudioProjectDetail {
   ownerEmail: string;
   settings: ProjectSettings;
   sourceImageDataUrl: string;
+  referenceImages?: ReferenceImageInput[];
   variants: PlayableVariant[];
   createdAt: string;
   updatedAt: string;
@@ -373,5 +383,6 @@ export interface StudioCloneImportPayload {
   importedAt: number;
   settings: ProjectSettings;
   source: SourceItem;
+  referenceImages?: ReferenceImageInput[];
   variants: PlayableVariant[];
 }

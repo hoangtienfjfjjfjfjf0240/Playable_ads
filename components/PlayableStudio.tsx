@@ -51,7 +51,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import type JSZip from 'jszip';
 import Link from 'next/link';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import {
   createDefaultProjectSettings,
   defaultProjectPrompt,
@@ -81,6 +81,7 @@ import {
 } from '../lib/playable-plan';
 import { buttonPresets, defaultLayerSettings, handMotionPresets, recipePresets, scanPresets, textCuePresets } from '../lib/presets';
 import { getSupabaseBrowser } from '../lib/supabase-browser';
+import { withStudioRoutePrefix } from '../lib/studio-routes';
 import { getVisualAsset, visualAssets } from '../lib/visual-assets';
 import type {
   AiVariantResponseItem,
@@ -91,6 +92,7 @@ import type {
   NetworkTarget,
   PlayableVariant,
   ProjectSettings,
+  ReferenceImageInput,
   ScanStyle,
   SourceItem,
   StudioAppSummary,
@@ -371,6 +373,7 @@ const aiProviderModelMap: Record<ProjectSettings['aiProvider'], string> = {
 const scanColorSwatches = ['#7c3cff', '#2563eb', '#22d3ee', '#10b981', '#f59e0b', '#ef4444', '#ffffff'];
 const APPLOVIN_MAX_HTML_BYTES = 5 * 1024 * 1024;
 const ANALYZE_CONCURRENCY = 4;
+const MAX_REFERENCE_IMAGES = 6;
 
 function setLayerDragData(event: DragEvent<HTMLElement>, layer: LayerTarget, assetId?: string, scanStyle?: ScanStyle) {
   event.dataTransfer.setData(LAYER_DRAG_TYPE, layer);
@@ -641,6 +644,7 @@ function getRecipePatchForLayer(layer: Partial<LayerSettings>, target: LayerTarg
 
 export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const referenceInputRef = useRef<HTMLInputElement>(null);
   const brandAssetInputRef = useRef<HTMLInputElement>(null);
   const handDataUrlCache = useRef(new Map<string, string>());
   const cloneImportCheckedRef = useRef(false);
@@ -656,7 +660,10 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
   const pendingPersistRef = useRef(false);
   const supabase = useMemo(() => getSupabaseBrowser(), []);
   const router = useRouter();
+  const pathname = usePathname();
   const searchParams = useSearchParams();
+  const routeFor = useCallback((href: string) => withStudioRoutePrefix(pathname, href), [pathname]);
+  const homeHref = routeFor('/');
   const [health, setHealth] = useState<HealthState>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [sessionLoading, setSessionLoading] = useState(Boolean(appId));
@@ -665,6 +672,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
   const [currentProjectId, setCurrentProjectId] = useState('');
   const [settings, setSettings] = useState<ProjectSettings>(() => normalizeProjectSettings(createDefaultProjectSettings()));
   const [sources, setSources] = useState<SourceItem[]>([]);
+  const [referenceImages, setReferenceImages] = useState<ReferenceImageInput[]>([]);
   const [activeSourceId, setActiveSourceId] = useState('');
   const [variants, setVariants] = useState<PlayableVariant[]>([]);
   const [selectedVariantId, setSelectedVariantId] = useState('');
@@ -748,9 +756,10 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
       prompt: settings.prompt,
       settings,
       sourceImageDataUrl: activeSource?.dataUrl || '',
+      referenceImages,
       variants,
     }));
-  }, [activeSource?.dataUrl, appId, appScopedEditor, currentProjectId, settings, variants]);
+  }, [activeSource?.dataUrl, appId, appScopedEditor, currentProjectId, referenceImages, settings, variants]);
   const hasProjectContent = Boolean(activeSource?.dataUrl || variants.length);
   const hasPersistableProject = Boolean(appScopedEditor && appId && hasProjectContent);
   const hasUnsavedProjectChanges = Boolean(autosaveSnapshot && autosaveSnapshot !== lastSavedSnapshotRef.current);
@@ -861,6 +870,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
       currentProjectIdRef.current = '';
       pendingProjectIdRef.current = '';
       setSettings(normalizeProjectSettings(payload.settings || createDefaultProjectSettings()));
+      setReferenceImages(normalizeReferenceImageInputs(payload.referenceImages));
       setSources([source]);
       setActiveSourceId(source.id);
       setVariants(
@@ -981,6 +991,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         prompt: settings.prompt,
         settings,
         sourceImageDataUrl: activeSource?.dataUrl || '',
+        referenceImages,
         variants,
       });
       const snapshot = buildProjectAutosaveSnapshot(savePayload);
@@ -1062,7 +1073,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         if (!silent) setBusy(false);
       }
     },
-    [activeSource?.dataUrl, appId, appScopedEditor, authToken, hasProjectContent, settings, variants],
+    [activeSource?.dataUrl, appId, appScopedEditor, authToken, hasProjectContent, referenceImages, settings, variants],
   );
 
   const resetCurrentProject = useCallback((nextProjectName?: string) => {
@@ -1078,6 +1089,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         name: projectName,
       },
       sourceImageDataUrl: '',
+      referenceImages: [],
       variants: [],
     }));
     lastSavedSnapshotRef.current = '';
@@ -1095,6 +1107,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
       name: projectName,
     });
     setSources([]);
+    setReferenceImages([]);
     setActiveSourceId('');
     setVariants([]);
     setSelectedVariantId('');
@@ -1130,7 +1143,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         return;
       }
 
-      if (typeof window !== 'undefined' && href === '/') {
+      if (typeof window !== 'undefined' && href === homeHref) {
         window.sessionStorage.setItem('playable-dashboard-refresh', String(Date.now()));
         window.location.assign(href);
         return;
@@ -1138,7 +1151,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
 
       router.push(href);
     },
-    [currentProjectId, hasPersistableProject, hasUnsavedProjectChanges, router, saveProject, supabase],
+    [currentProjectId, hasPersistableProject, hasUnsavedProjectChanges, homeHref, router, saveProject, supabase],
   );
 
   const loadSavedProject = useCallback(
@@ -1161,6 +1174,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         if (!response.ok) throw new Error(typeof payload?.error === 'string' ? payload.error : 'Cannot load project.');
 
         const project = payload.project as StudioProjectDetail;
+        const restoredReferenceImages = normalizeReferenceImageInputs(project.referenceImages);
         const sourceId = `source-${project.id}`;
         const sourceItem: SourceItem | null = project.sourceImageDataUrl
           ? {
@@ -1180,6 +1194,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         currentProjectIdRef.current = project.id;
         pendingProjectIdRef.current = project.id;
         setSettings(normalizeProjectSettings(project.settings || createDefaultProjectSettings()));
+        setReferenceImages(restoredReferenceImages);
         setSources(sourceItem ? [sourceItem] : []);
         setActiveSourceId(sourceItem?.id || '');
         setVariants(
@@ -1199,6 +1214,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
           prompt: project.prompt,
           settings: normalizeProjectSettings(project.settings || createDefaultProjectSettings()),
           sourceImageDataUrl: sourceItem?.dataUrl || '',
+          referenceImages: restoredReferenceImages,
           variants: project.variants.map((variant) => ({
             ...variant,
             sourceId,
@@ -1386,6 +1402,63 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
     }
   };
 
+  const importReferenceImages = async (files: FileList | File[] | null | undefined) => {
+    const list = Array.from(files || []).filter((file) => /^image\/(png|jpe?g|webp)$/i.test(file.type));
+    if (!list.length) {
+      if (referenceInputRef.current) referenceInputRef.current.value = '';
+      setNotice({ tone: 'error', text: 'Chỉ nhận PNG, JPG, WEBP cho input ref.' });
+      return;
+    }
+
+    const availableSlots = Math.max(0, MAX_REFERENCE_IMAGES - referenceImages.length);
+    if (!availableSlots) {
+      if (referenceInputRef.current) referenceInputRef.current.value = '';
+      setNotice({ tone: 'warn', text: `Input ref tối đa ${MAX_REFERENCE_IMAGES} ảnh.` });
+      return;
+    }
+
+    const acceptedFiles = list.slice(0, availableSlots);
+    setBusy(true);
+    setNotice({ tone: 'busy', text: 'Đang đọc input ref...' });
+
+    try {
+      const imported = await Promise.all(
+        acceptedFiles.map(async (file, index) => {
+          const dataUrl = await readFileAsDataUrl(file);
+          const dimensions = await getImageDimensions(dataUrl);
+          return {
+            id: `ref-${Date.now()}-${index}-${Math.random().toString(16).slice(2, 8)}`,
+            name: file.name,
+            dataUrl,
+            width: dimensions.width,
+            height: dimensions.height,
+            createdAt: Date.now(),
+          } satisfies ReferenceImageInput;
+        }),
+      );
+
+      setReferenceImages((current) => [...imported, ...current].slice(0, MAX_REFERENCE_IMAGES));
+      markProjectForPersist();
+      setNotice({
+        tone: list.length > acceptedFiles.length ? 'warn' : 'ok',
+        text:
+          list.length > acceptedFiles.length
+            ? `Đã thêm ${imported.length} input ref, bỏ qua ${list.length - acceptedFiles.length} ảnh vì đã chạm giới hạn ${MAX_REFERENCE_IMAGES}.`
+            : `Đã thêm ${imported.length} input ref.`,
+      });
+    } catch (error) {
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Không đọc được input ref.' });
+    } finally {
+      setBusy(false);
+      if (referenceInputRef.current) referenceInputRef.current.value = '';
+    }
+  };
+
+  const removeReferenceImage = (referenceId: string) => {
+    setReferenceImages((current) => current.filter((reference) => reference.id !== referenceId));
+    markProjectForPersist();
+  };
+
   const attachBrandAssetToLayer = (layer: Partial<LayerSettings>, dataUrl: string, name: string) => {
     const current = normalizeLayerSettings(layer);
     const hadCustomAsset = Boolean(current.customAssetDataUrl);
@@ -1561,6 +1634,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           imageDataUrl: activeSource.dataUrl,
+          referenceImageDataUrls: referenceImages.map((reference) => reference.dataUrl),
           prompt: localizedPrompt,
           hasBrandAssetOverlay: Boolean(settings.brandAssetDataUrl),
           referenceMode: activeSource.kind === 'html' ? 'playable-import' : 'image',
@@ -2296,7 +2370,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
       <main className="dashboard-state">
         <AlertCircle size={18} />
         <span>Trình chỉnh sửa này yêu cầu đăng nhập Supabase.</span>
-        <Link href="/" className="secondary-button">
+        <Link href={homeHref} className="secondary-button">
           Quay lại home
         </Link>
       </main>
@@ -2319,11 +2393,15 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         {appScopedEditor ? (
           <section className="sidebar-section workspace-scope-section">
             <div className="editor-sidebar-actions">
-              <button type="button" className="secondary-button" onClick={() => void leaveEditor('/')}>
+              <button type="button" className="secondary-button" onClick={() => void leaveEditor(homeHref)}>
                 <ArrowLeft size={15} />
                 Home
               </button>
-              <button type="button" className="secondary-button" onClick={() => void leaveEditor(`/apps/${appId}/clone`)}>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => void leaveEditor(routeFor(`/apps/${appId}/clone`))}
+              >
                 <FileCode2 size={15} />
                 Clone playable
               </button>
@@ -2334,7 +2412,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
 
         <button className="upload-zone" type="button" onClick={() => fileInputRef.current?.click()}>
           <Upload size={22} />
-          <strong>Nhập</strong>
+          <strong>Nguồn chính</strong>
           <span>PNG, JPG, WEBP, HTML</span>
         </button>
         <input
@@ -2344,6 +2422,20 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
           accept="image/png,image/jpeg,image/webp,.html,.htm"
           multiple
           onChange={(event) => importFiles(event.target.files || [])}
+        />
+
+        <button className="upload-zone reference-upload-zone" type="button" onClick={() => referenceInputRef.current?.click()}>
+          <ImagePlus size={22} />
+          <strong>Input ref</strong>
+          <span>PNG, JPG, WEBP</span>
+        </button>
+        <input
+          ref={referenceInputRef}
+          className="sr-only"
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          multiple
+          onChange={(event) => void importReferenceImages(event.target.files)}
         />
 
         <section className="sidebar-section">
@@ -2398,6 +2490,37 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
               ))}
             </AnimatePresence>
           </div>
+        </section>
+
+        <section className="sidebar-section">
+          <div className="section-head">
+            <span>Input ref</span>
+            <b>{referenceImages.length}</b>
+          </div>
+          {referenceImages.length ? (
+            <div className="reference-list">
+              {referenceImages.map((reference) => (
+                <article key={reference.id} className="reference-row">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img className="reference-thumb" src={reference.dataUrl} alt={reference.name} />
+                  <span className="reference-meta">
+                    <strong>{reference.name}</strong>
+                    <small>{`${reference.width}x${reference.height}`}</small>
+                  </span>
+                  <button
+                    className="row-remove"
+                    type="button"
+                    onClick={() => removeReferenceImage(reference.id)}
+                    aria-label={`Xóa input ref ${reference.name}`}
+                  >
+                    <X size={14} />
+                  </button>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <p className="empty-note">Chưa có input ref.</p>
+          )}
         </section>
 
         <section className="sidebar-section">
@@ -2750,9 +2873,6 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
           <label className="field">
             <span>Mô tả</span>
             <textarea rows={5} value={settings.prompt} onChange={(event) => setProjectSetting('prompt', event.target.value)} />
-            <small className="field-help">
-              Mặc định ảnh nền sẽ xóa hết text trong ảnh. Nếu muốn giữ, ghi rõ kiểu `giữ 1 headline chính`; còn `tay animation kéo qua lại`, `tap CTA`, `scan face` sẽ được hiểu là overlay runtime.
-            </small>
           </label>
           <label className="field">
             <span>Ngôn ngữ localize</span>
@@ -2763,9 +2883,6 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                 </option>
               ))}
             </select>
-            <small className="field-help">
-              Localize CTA, cue, và mọi headline/text được giữ lại trong ảnh. Nếu muốn localize text nằm trong ảnh, hãy ghi rõ kiểu `giữ 1 headline chính`. `Auto from prompt` sẽ chỉ đổi ngôn ngữ khi prompt tự ghi rõ.
-            </small>
           </label>
           <input
             ref={brandAssetInputRef}
@@ -4678,6 +4795,7 @@ type ProjectSavePayload = {
   prompt: string;
   settings: ProjectSettings;
   sourceImageDataUrl: string;
+  referenceImages: ReferenceImageInput[];
   variants: Array<{
     id: string;
     sourceId: string;
@@ -4699,6 +4817,7 @@ function buildProjectSavePayload({
   prompt,
   settings,
   sourceImageDataUrl,
+  referenceImages,
   variants,
 }: {
   id: string;
@@ -4707,6 +4826,7 @@ function buildProjectSavePayload({
   prompt: string;
   settings: ProjectSettings;
   sourceImageDataUrl: string;
+  referenceImages: ReferenceImageInput[];
   variants: PlayableVariant[];
 }): ProjectSavePayload {
   return {
@@ -4716,6 +4836,14 @@ function buildProjectSavePayload({
     prompt: safeString(prompt),
     settings: toJsonSafe(normalizeProjectSettings(settings)),
     sourceImageDataUrl: safeString(sourceImageDataUrl),
+    referenceImages: normalizeReferenceImageInputs(referenceImages).map((reference, index) => ({
+      id: safeString(reference.id) || `reference-${index + 1}`,
+      name: safeString(reference.name) || `Reference ${index + 1}`,
+      dataUrl: safeString(reference.dataUrl),
+      width: safeInteger(reference.width),
+      height: safeInteger(reference.height),
+      createdAt: safeInteger(reference.createdAt, Date.now()),
+    })),
     variants: variants.map((variant, index) => ({
       id: safeString(variant.id) || `variant-${index + 1}`,
       sourceId: safeString(variant.sourceId),
@@ -4738,6 +4866,28 @@ function buildProjectSavePayload({
 
 function buildProjectAutosaveSnapshot(payload: ProjectSavePayload) {
   return JSON.stringify(payload);
+}
+
+function normalizeReferenceImageInputs(items: unknown): ReferenceImageInput[] {
+  if (!Array.isArray(items)) return [];
+
+  return items
+    .map((item, index) => {
+      if (!item || typeof item !== 'object') return null;
+      const record = item as Partial<ReferenceImageInput>;
+      const dataUrl = typeof record.dataUrl === 'string' ? record.dataUrl : '';
+      if (!dataUrl.startsWith('data:image/')) return null;
+      return {
+        id: typeof record.id === 'string' && record.id.trim() ? record.id : `reference-${index + 1}`,
+        name: typeof record.name === 'string' && record.name.trim() ? record.name : `Reference ${index + 1}`,
+        dataUrl,
+        width: safeInteger(record.width),
+        height: safeInteger(record.height),
+        createdAt: safeInteger(record.createdAt, Date.now()),
+      } satisfies ReferenceImageInput;
+    })
+    .filter((item): item is ReferenceImageInput => Boolean(item))
+    .slice(0, MAX_REFERENCE_IMAGES);
 }
 
 function toJsonSafe<T>(value: T, seen = new WeakSet<object>(), depth = 0): T {

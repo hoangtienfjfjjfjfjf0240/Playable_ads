@@ -14,6 +14,7 @@ const AI_IMAGE_MODEL = process.env.AI_IMAGE_MODEL || 'gpt-image-2';
 const GEMINI_FLASH_IMAGE_MODEL = process.env.GEMINI_FLASH_IMAGE_MODEL || 'gemini/gemini-3.1-flash-image-preview';
 const GEMINI_PRO_IMAGE_MODEL = process.env.GEMINI_PRO_IMAGE_MODEL || 'gemini/gemini-3-pro-image-preview';
 const GEMINI_FALLBACK_IMAGE_MODEL = process.env.GEMINI_FALLBACK_IMAGE_MODEL || 'gemini/gemini-2.5-flash-image';
+const MAX_REFERENCE_IMAGES = 6;
 
 export async function POST(request: Request) {
   try {
@@ -35,6 +36,7 @@ type PreparedGeneration = {
   provider: AiProvider;
   model: string;
   imageDataUrl: string;
+  referenceImageDataUrls: string[];
   prompt: string;
   aspectRatio: string;
   count: number;
@@ -51,12 +53,19 @@ function prepareGeneration(body: Record<string, unknown>): PreparedGeneration {
 
   const imageDataUrl = String(body.imageDataUrl || '');
   if (!imageDataUrl.startsWith('data:image/')) throw new Error('A base64 image data URL is required.');
+  const referenceImageDataUrls = Array.isArray(body.referenceImageDataUrls)
+    ? body.referenceImageDataUrls
+        .map((value) => String(value || ''))
+        .filter((value) => value.startsWith('data:image/'))
+        .slice(0, MAX_REFERENCE_IMAGES)
+    : [];
 
   return {
     apiKey,
     provider,
     model: String(body.model || getDefaultModel(provider)),
     imageDataUrl,
+    referenceImageDataUrls,
     prompt: String(body.prompt || ''),
     aspectRatio: String(body.aspectRatio || '9:16'),
     count: normalizeVariantCount(body.count || DEFAULT_VARIANT_COUNT),
@@ -68,14 +77,30 @@ function prepareGeneration(body: Record<string, unknown>): PreparedGeneration {
 }
 
 async function generateVariants(body: Record<string, unknown>) {
-  const { apiKey, provider, model, imageDataUrl, prompt, aspectRatio, count, hasBrandAssetOverlay, referenceMode, preferResponses, targetSize } = prepareGeneration(body);
+  const { apiKey, provider, model, imageDataUrl, referenceImageDataUrls, prompt, aspectRatio, count, hasBrandAssetOverlay, referenceMode, preferResponses, targetSize } = prepareGeneration(body);
   const startedAt = Date.now();
   console.log(`[ai] generating ${count} variants in parallel with ${provider}:${model}`);
 
   const limit = pLimit(getImageConcurrency());
   const results = await Promise.allSettled(
     Array.from({ length: count }, (_, index) =>
-      limit(() => generateOneVariant({ apiKey, provider, model, imageDataUrl, prompt, aspectRatio, hasBrandAssetOverlay, referenceMode, preferResponses, targetSize, index, count })),
+      limit(() =>
+        generateOneVariant({
+          apiKey,
+          provider,
+          model,
+          imageDataUrl,
+          referenceImageDataUrls,
+          prompt,
+          aspectRatio,
+          hasBrandAssetOverlay,
+          referenceMode,
+          preferResponses,
+          targetSize,
+          index,
+          count,
+        }),
+      ),
     ),
   );
 
@@ -148,6 +173,7 @@ async function generateOneVariant({
   provider,
   model,
   imageDataUrl,
+  referenceImageDataUrls,
   prompt,
   aspectRatio,
   hasBrandAssetOverlay,
@@ -161,6 +187,7 @@ async function generateOneVariant({
   provider: AiProvider;
   model: string;
   imageDataUrl: string;
+  referenceImageDataUrls: string[];
   prompt: string;
   aspectRatio: string;
   hasBrandAssetOverlay: boolean;
@@ -170,19 +197,24 @@ async function generateOneVariant({
   index: number;
   count: number;
 }) {
-  const variantPrompt = buildVariantPrompt(prompt, index, count, aspectRatio, { hasBrandAssetOverlay, referenceMode });
+  const variantPrompt = buildVariantPrompt(prompt, index, count, aspectRatio, {
+    hasBrandAssetOverlay,
+    referenceMode,
+    referenceImageCount: referenceImageDataUrls.length,
+  });
   const startedAt = Date.now();
   let generated: { dataUrl: string; revisedPrompt?: string };
 
   try {
     if (provider === 'openai' && preferResponses) {
-      generated = await callResponsesImageGeneration({ apiKey, model, imageDataUrl, prompt: variantPrompt });
+      generated = await callResponsesImageGeneration({ apiKey, model, imageDataUrl, referenceImageDataUrls, prompt: variantPrompt });
       console.log(`[ai] variant ${index + 1}/${count} used responses-first`);
     } else {
       generated = await callImageEditGeneration({
         apiKey,
         model: provider === 'openai' ? AI_IMAGE_MODEL : model,
         imageDataUrl,
+        referenceImageDataUrls,
         prompt: variantPrompt,
       });
     }
@@ -193,6 +225,7 @@ async function generateOneVariant({
           apiKey,
           model: AI_IMAGE_MODEL,
           imageDataUrl,
+          referenceImageDataUrls,
           prompt: variantPrompt,
           cause: editError instanceof Error ? editError : undefined,
         });
@@ -205,6 +238,7 @@ async function generateOneVariant({
           apiKey,
           model: GEMINI_FALLBACK_IMAGE_MODEL,
           imageDataUrl,
+          referenceImageDataUrls,
           prompt: variantPrompt,
           cause: editError instanceof Error ? editError : undefined,
         });
@@ -214,7 +248,7 @@ async function generateOneVariant({
       }
     } else {
       try {
-        generated = await callResponsesImageGeneration({ apiKey, model, imageDataUrl, prompt: variantPrompt });
+        generated = await callResponsesImageGeneration({ apiKey, model, imageDataUrl, referenceImageDataUrls, prompt: variantPrompt });
       } catch (responsesError) {
         throw new Error(
           `${getErrorMessage(editError)}; responses fallback failed: ${getErrorMessage(responsesError)}`,
@@ -289,9 +323,10 @@ function buildVariantPrompt(
   index: number,
   count: number,
   aspectRatio: string,
-  options?: { hasBrandAssetOverlay?: boolean; referenceMode?: 'image' | 'playable-import' },
+  options?: { hasBrandAssetOverlay?: boolean; referenceMode?: 'image' | 'playable-import'; referenceImageCount?: number },
 ) {
   const referenceMode = options?.referenceMode || 'image';
+  const referenceImageCount = Number(options?.referenceImageCount || 0);
   const cleanPrompt = sanitizeBackgroundPrompt(prompt);
   const effectivePrompt = cleanPrompt || prompt.trim();
   const distinctnessRule = buildDistinctnessRule(effectivePrompt, count, referenceMode);
@@ -300,6 +335,7 @@ function buildVariantPrompt(
   const brandOverlayInstruction = buildBrandOverlayInstruction(options?.hasBrandAssetOverlay === true);
   const safeZoneInstruction = buildMobileSafeZoneInstruction(options?.hasBrandAssetOverlay === true);
   const referenceStyleInstruction = buildReferenceStyleInstruction(referenceMode);
+  const additionalReferenceInstruction = buildAdditionalReferenceInstruction(referenceMode, referenceImageCount);
   const directions = buildVariantCompositionDirection(index, referenceMode);
 
   return [
@@ -309,6 +345,7 @@ function buildVariantPrompt(
     effectivePrompt,
     'Treat the campaign prompt as the main creative brief for the background image. Keep the requested scene, product category, and message instead of defaulting to the same room repeatedly.',
     referenceStyleInstruction,
+    additionalReferenceInstruction,
     textPolicyInstruction,
     brandOverlayInstruction,
     distinctnessRule,
@@ -331,9 +368,17 @@ function buildBrandOverlayInstruction(hasBrandAssetOverlay: boolean) {
 
 function buildReferenceStyleInstruction(referenceMode: 'image' | 'playable-import') {
   if (referenceMode !== 'playable-import') {
-    return 'Use the reference image as a strong visual guide for product framing, palette balance, and overall ad quality.';
+    return 'Use the reference image as a strong visual anchor for product framing, palette balance, material cues, camera distance, and overall ad quality. Stay in the same visual family instead of drifting into a different look.';
   }
   return 'Use the imported playable frame as the primary style reference. Preserve the same visual language, palette family, contrast level, lighting mood, material treatment, device framing, background treatment, iconography feel, and overall ad-world style unless the prompt explicitly asks to change those things. Apply the user prompt inside that same creative system instead of drifting to a different art direction.';
+}
+
+function buildAdditionalReferenceInstruction(referenceMode: 'image' | 'playable-import', referenceImageCount: number) {
+  if (referenceImageCount <= 0) return '';
+  if (referenceMode === 'playable-import') {
+    return `There are ${referenceImageCount} additional uploaded reference images. Keep the imported playable frame as the primary composition anchor, and treat the extra references as mandatory secondary guidance for product detail, UI motif, palette consistency, lighting, props, and brand-world fidelity. If multiple references repeat the same cue, prefer that shared cue over invented alternatives.`;
+  }
+  return `There are ${referenceImageCount} additional uploaded reference images. Use them together with the primary reference image to improve detail accuracy, styling consistency, and visual fidelity. Treat the shared cues across those references as required guidance instead of optional inspiration, and do not ignore the secondary references.`;
 }
 
 function buildVariantCompositionDirection(index: number, referenceMode: 'image' | 'playable-import') {
@@ -559,11 +604,13 @@ async function callResponsesImageGeneration({
   apiKey,
   model,
   imageDataUrl,
+  referenceImageDataUrls,
   prompt,
 }: {
   apiKey: string;
   model: string;
   imageDataUrl: string;
+  referenceImageDataUrls: string[];
   prompt: string;
 }) {
   const response = await fetch(`${AI_BASE_URL}/v1/responses`, {
@@ -580,6 +627,10 @@ async function callResponsesImageGeneration({
           content: [
             { type: 'input_text', text: prompt },
             { type: 'input_image', image_url: imageDataUrl },
+            ...referenceImageDataUrls.map((referenceImageDataUrl) => ({
+              type: 'input_image' as const,
+              image_url: referenceImageDataUrl,
+            })),
           ],
         },
       ],
@@ -597,20 +648,24 @@ async function callImageEditGeneration({
   apiKey,
   model,
   imageDataUrl,
+  referenceImageDataUrls,
   prompt,
   cause,
 }: {
   apiKey: string;
   model: string;
   imageDataUrl: string;
+  referenceImageDataUrls: string[];
   prompt: string;
   cause?: Error;
 }) {
-  const { buffer, mime, extension } = dataUrlToBuffer(imageDataUrl);
   const form = new FormData();
   form.append('model', model);
   form.append('prompt', prompt);
-  form.append('image', new Blob([buffer], { type: mime }), `reference.${extension}`);
+  [imageDataUrl, ...referenceImageDataUrls].forEach((dataUrl, index) => {
+    const { buffer, mime, extension } = dataUrlToBuffer(dataUrl);
+    form.append('image', new Blob([buffer], { type: mime }), `reference-${index + 1}.${extension}`);
+  });
 
   const response = await fetch(`${AI_BASE_URL}/v1/images/edits`, {
     method: 'POST',
