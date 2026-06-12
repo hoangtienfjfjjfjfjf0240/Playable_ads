@@ -12,8 +12,10 @@ import {
   RefreshCw,
   Upload,
   WandSparkles,
+  X,
 } from 'lucide-react';
 import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   applyContentLocaleToPrompt,
@@ -29,7 +31,7 @@ import {
   safeFileName,
 } from '../lib/export-engine';
 import { getHandAsset } from '../lib/hand-assets';
-import { detectImageHotspot, getImageDimensions, loadAssetAsDataUrl } from '../lib/image-utils';
+import { detectImageHotspot, getImageDimensions, loadAssetAsDataUrl, readFileAsDataUrl } from '../lib/image-utils';
 import {
   buildPlayableClonePrompt,
   createPlayableClonePromptSeed,
@@ -42,6 +44,7 @@ import {
   playableIntentLabels,
 } from '../lib/playable-plan';
 import { buttonPresets, handMotionPresets, scanPresets, textCuePresets } from '../lib/presets';
+import { withStudioRoutePrefix } from '../lib/studio-routes';
 import type {
   AiVariantResponseItem,
   Hotspot,
@@ -49,6 +52,7 @@ import type {
   NetworkTarget,
   PlayableVariant,
   ProjectSettings,
+  ReferenceImageInput,
   SourceItem,
   StudioCloneImportPayload,
 } from '../lib/types';
@@ -74,10 +78,15 @@ const aiProviderModelMap: Record<ProjectSettings['aiProvider'], string> = {
   'gemini-pro': 'gemini/gemini-3-pro-image-preview',
 };
 
+const MAX_REFERENCE_IMAGES = 6;
+
 export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const referenceInputRef = useRef<HTMLInputElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const handDataUrlCache = useRef(new Map<string, string>());
+  const pathname = usePathname();
+  const routeFor = useCallback((href: string) => withStudioRoutePrefix(pathname, href), [pathname]);
   const [settings, setSettings] = useState<ProjectSettings>(() =>
     normalizeProjectSettings({
       ...createDefaultProjectSettings(),
@@ -90,9 +99,10 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
   const [previewUrl, setPreviewUrl] = useState('');
   const [previewVariants, setPreviewVariants] = useState<Record<string, string>>({});
   const [sourceCapture, setSourceCapture] = useState<SourceItem | null>(null);
+  const [referenceImages, setReferenceImages] = useState<ReferenceImageInput[]>([]);
   const [variants, setVariants] = useState<PlayableVariant[]>([]);
   const [notice, setNotice] = useState<Notice>(null);
-  const [busy, setBusy] = useState<'analyze' | 'generate' | 'handoff' | 'export' | 'zip' | ''>('');
+  const [busy, setBusy] = useState<'analyze' | 'generate' | 'handoff' | 'export' | 'zip' | 'refs' | ''>('');
   const [selectedVariantId, setSelectedVariantId] = useState('');
   const [inference, setInference] = useState<ReturnType<typeof inferPlayableClonePlan> | null>(null);
   const [sourceLayout, setSourceLayout] = useState<PlayableCloneLayoutSnapshot | null>(null);
@@ -107,6 +117,7 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
     setAnalysis(null);
     setPreviewVariants({});
     setSourceCapture(null);
+    setReferenceImages([]);
     setVariants([]);
     setNotice({ tone: 'ok', text: 'Đã tạo phiên clone mới.' });
     setBusy('');
@@ -131,6 +142,7 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
       }),
     );
     if (fileInputRef.current) fileInputRef.current.value = '';
+    if (referenceInputRef.current) referenceInputRef.current.value = '';
   }, []);
 
   useEffect(() => {
@@ -329,6 +341,61 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
     }
   };
 
+  const importReferenceImages = async (files: FileList | File[] | null | undefined) => {
+    const list = Array.from(files || []).filter((file) => /^image\/(png|jpe?g|webp)$/i.test(file.type));
+    if (!list.length) {
+      if (referenceInputRef.current) referenceInputRef.current.value = '';
+      setNotice({ tone: 'error', text: 'Chỉ nhận PNG, JPG, WEBP cho input ref.' });
+      return;
+    }
+
+    const availableSlots = Math.max(0, MAX_REFERENCE_IMAGES - referenceImages.length);
+    if (!availableSlots) {
+      if (referenceInputRef.current) referenceInputRef.current.value = '';
+      setNotice({ tone: 'warn', text: `Input ref tối đa ${MAX_REFERENCE_IMAGES} ảnh.` });
+      return;
+    }
+
+    const acceptedFiles = list.slice(0, availableSlots);
+    setBusy('refs');
+    setNotice({ tone: 'busy', text: 'Đang đọc input ref...' });
+
+    try {
+      const imported = await Promise.all(
+        acceptedFiles.map(async (file, index) => {
+          const dataUrl = await readFileAsDataUrl(file);
+          const dimensions = await getImageDimensions(dataUrl);
+          return {
+            id: `clone-ref-${Date.now()}-${index}-${Math.random().toString(16).slice(2, 8)}`,
+            name: file.name,
+            dataUrl,
+            width: dimensions.width,
+            height: dimensions.height,
+            createdAt: Date.now(),
+          } satisfies ReferenceImageInput;
+        }),
+      );
+
+      setReferenceImages((current) => [...imported, ...current].slice(0, MAX_REFERENCE_IMAGES));
+      setNotice({
+        tone: list.length > acceptedFiles.length ? 'warn' : 'ok',
+        text:
+          list.length > acceptedFiles.length
+            ? `Đã thêm ${imported.length} input ref, bỏ qua ${list.length - acceptedFiles.length} ảnh vì đã chạm giới hạn ${MAX_REFERENCE_IMAGES}.`
+            : `Đã thêm ${imported.length} input ref.`,
+      });
+    } catch (error) {
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Không đọc được input ref.' });
+    } finally {
+      setBusy('');
+      if (referenceInputRef.current) referenceInputRef.current.value = '';
+    }
+  };
+
+  const removeReferenceImage = (referenceId: string) => {
+    setReferenceImages((current) => current.filter((reference) => reference.id !== referenceId));
+  };
+
   const generateCloneBatch = async () => {
     if (!analysis || !previewUrl) {
       setNotice({ tone: 'error', text: 'Hãy nhập playable trước.' });
@@ -336,7 +403,10 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
     }
 
     setBusy('generate');
-      setNotice({ tone: 'busy', text: `Đang chụp khung hình và tạo ${settings.variantCount} biến thể clone...` });
+    setNotice({
+      tone: 'busy',
+      text: `Đang chụp khung hình và tạo ${settings.variantCount} biến thể clone${referenceImages.length ? ` với ${referenceImages.length} input ref` : ''}...`,
+    });
 
     try {
       const frameSize = settings.orientation === 'landscape' ? { width: 1280, height: 720 } : { width: 720, height: 1280 };
@@ -372,9 +442,11 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
           provider: settings.aiProvider,
           model: aiProviderModelMap[settings.aiProvider],
           imageDataUrl: captured.dataUrl,
+          referenceImageDataUrls: referenceImages.map((reference) => reference.dataUrl),
           prompt: requestPrompt,
           count: clampInteger(settings.variantCount, 1, 8),
           aspectRatio: settings.orientation === 'landscape' ? '16:9' : '9:16',
+          referenceMode: 'playable-import',
         }),
       });
       const payload = (await response.json()) as { variants?: AiVariantResponseItem[]; error?: string };
@@ -520,6 +592,7 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
           prompt: settings.prompt.trim() || createPlayableClonePromptSeed(inference || undefined),
         }),
         source: sourceCapture,
+        referenceImages,
         variants: variants.map((variant, index) => ({
           ...variant,
           sourceId: sourceCapture.id,
@@ -527,7 +600,7 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
         })),
       };
       window.sessionStorage.setItem(`playable-clone-import:${appId}`, JSON.stringify(payload));
-      window.location.href = `/apps/${appId}`;
+      window.location.href = routeFor(`/apps/${appId}`);
     } catch (error) {
       setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Không chuyển được sang Studio.' });
       setBusy('');
@@ -549,11 +622,11 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
 
         <section className="sidebar-section workspace-scope-section">
           <div className="editor-sidebar-actions">
-            <Link href="/" className="secondary-button">
+            <Link href={routeFor('/')} className="secondary-button">
               <ArrowLeft size={15} />
               Thư viện
             </Link>
-            <Link href={`/apps/${appId}`} className="secondary-button">
+            <Link href={routeFor(`/apps/${appId}`)} className="secondary-button">
               <WandSparkles size={15} />
               Editor chính
             </Link>
@@ -595,6 +668,52 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
             if (file) analyzeFile(file);
           }}
         />
+        <button className="upload-zone" type="button" onClick={() => referenceInputRef.current?.click()}>
+          <Upload size={22} />
+          <strong>Input ref</strong>
+          <span>PNG, JPG, WEBP</span>
+        </button>
+        <input
+          ref={referenceInputRef}
+          className="sr-only"
+          type="file"
+          accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"
+          multiple
+          onChange={(event) => {
+            void importReferenceImages(event.target.files);
+          }}
+        />
+
+        <section className="sidebar-section">
+          <div className="section-head">
+            <span>Input ref</span>
+            <b>{referenceImages.length}</b>
+          </div>
+          {referenceImages.length ? (
+            <div className="reference-list">
+              {referenceImages.map((reference) => (
+                <article key={reference.id} className="reference-row">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img className="reference-thumb" src={reference.dataUrl} alt={reference.name} />
+                  <span className="reference-meta">
+                    <strong>{reference.name}</strong>
+                    <small>{`${reference.width}x${reference.height}`}</small>
+                  </span>
+                  <button
+                    className="row-remove"
+                    type="button"
+                    onClick={() => removeReferenceImage(reference.id)}
+                    aria-label={`Xóa input ref ${reference.name}`}
+                  >
+                    <X size={14} />
+                  </button>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-note">Chưa có input ref.</div>
+          )}
+        </section>
 
         <section className="sidebar-section">
           <div className="section-head">
@@ -623,9 +742,6 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
                 </option>
               ))}
             </select>
-            <small className="field-help">
-              Localize CTA/cue runtime ngay trong clone flow. Nếu muốn localize text nằm trong ảnh clone, hãy ghi rõ giữ headline/text nào thay vì để hệ thống tự xóa sạch text.
-            </small>
           </label>
           <div className="field-grid two">
             <label className="field">

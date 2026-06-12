@@ -18,6 +18,7 @@ import {
   WandSparkles,
 } from 'lucide-react';
 import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { getImageDimensions, readFileAsDataUrl } from '../lib/image-utils';
 import type {
@@ -26,6 +27,7 @@ import type {
   PlayableLayerEditability,
   PlayableLayerRole,
 } from '../lib/playable-layers';
+import { withStudioRoutePrefix } from '../lib/studio-routes';
 import type { AiVariantResponseItem } from '../lib/types';
 
 type AnalysisResult = {
@@ -90,6 +92,8 @@ const remakeAnimationLabels: Record<RemakeAnimation, string> = {
 export function PlayableLayerEditor() {
   const inputRef = useRef<HTMLInputElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const pathname = usePathname();
+  const homeHref = withStudioRoutePrefix(pathname, '/');
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
   const [selectedId, setSelectedId] = useState('');
   const [replacements, setReplacements] = useState<Record<string, string>>({});
@@ -375,7 +379,7 @@ export function PlayableLayerEditor() {
     <main className="layer-editor-shell">
       <aside className="layer-editor-sidebar">
         <div className="layer-editor-brand">
-          <Link className="icon-button" href="/" title="Về Animation Editor" aria-label="Về Animation Editor">
+          <Link className="icon-button" href={homeHref} title="Về Animation Editor" aria-label="Về Animation Editor">
             <ArrowLeft size={18} />
           </Link>
           <div>

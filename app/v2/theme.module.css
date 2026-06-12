@@ -1,0 +1,715 @@
+.theme {
+  --bg: #f7f7f8;
+  --surface: #ffffff;
+  --surface-container: #f1f3f6;
+  --surface-container-high: #eceff4;
+  --surface-tonal: #eef2ff;
+  --text: #111111;
+  --muted: #5f6670;
+  --border: #c7ccd5;
+  --primary: #002fa7;
+  --primary-dark: #002fa7;
+  --primary-soft: #e7edff;
+  --amber: #002fa7;
+  --amber-soft: #eef2ff;
+  --rose: #111111;
+  --rose-soft: #f2f2f3;
+  --green: #002fa7;
+  --shadow-subtle: none;
+  --shadow-elevated: none;
+  --shadow-panel: none;
+  position: relative;
+  min-height: 100vh;
+  background:
+    linear-gradient(to right, rgba(17, 17, 17, 0.08) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(17, 17, 17, 0.08) 1px, transparent 1px),
+    var(--bg);
+  background-size: 72px 72px;
+  color: var(--text);
+}
+
+.folio {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 34px;
+  padding: 0 18px;
+  border-bottom: 1px solid rgba(17, 17, 17, 0.12);
+  background: rgba(247, 247, 248, 0.92);
+  backdrop-filter: blur(8px);
+  color: var(--muted);
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
+.axis {
+  position: fixed;
+  left: 10px;
+  bottom: 18px;
+  z-index: 70;
+  display: grid;
+  gap: 8px;
+  color: rgba(17, 17, 17, 0.45);
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  pointer-events: none;
+}
+
+.corner {
+  position: fixed;
+  right: 18px;
+  bottom: 10px;
+  z-index: 60;
+  color: rgba(0, 47, 167, 0.12);
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-size: clamp(80px, 11vw, 180px);
+  font-weight: 800;
+  letter-spacing: -0.08em;
+  line-height: 0.9;
+  pointer-events: none;
+  user-select: none;
+}
+
+.theme :global(*) {
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+
+.theme :global(.login-shell),
+.theme :global(.dashboard-shell),
+.theme :global(.dashboard-state),
+.theme :global(.studio-shell),
+.theme :global(.layer-editor-shell) {
+  background: transparent;
+}
+
+.theme :global(.login-stage),
+.theme :global(.dashboard-shell.project-hub-shell) {
+  padding-top: 76px;
+}
+
+.theme :global(.studio-shell),
+.theme :global(.layer-editor-shell) {
+  padding: 52px 16px 16px;
+  gap: 14px;
+}
+
+.theme :global(.studio-shell),
+.theme :global(.layer-editor-shell),
+.theme :global(.dashboard-shell.project-hub-shell),
+.theme :global(.dashboard-state) {
+  position: relative;
+}
+
+.theme :global(.login-card),
+.theme :global(.project-hub-toolbar),
+.theme :global(.project-card),
+.theme :global(.project-empty-state),
+.theme :global(.sidebar),
+.theme :global(.workspace),
+.theme :global(.inspector),
+.theme :global(.preview-card),
+.theme :global(.html-preview-card),
+.theme :global(.panel-section),
+.theme :global(.sidebar-section),
+.theme :global(.workspace-scope-card),
+.theme :global(.dashboard-toolbar),
+.theme :global(.dashboard-stat-card),
+.theme :global(.dashboard-create-card),
+.theme :global(.workspace-dashboard-section),
+.theme :global(.workspace-app-card),
+.theme :global(.workspace-app-statpill),
+.theme :global(.clone-detail-list div),
+.theme :global(.clone-summary-row),
+.theme :global(.clone-grid-empty),
+.theme :global(.layer-editor-sidebar),
+.theme :global(.layer-editor-workspace),
+.theme :global(.layer-editor-inspector),
+.theme :global(.layer-file-summary),
+.theme :global(.layer-preview-surface),
+.theme :global(.selected-layer-preview),
+.theme :global(.login-status),
+.theme :global(.dashboard-banner),
+.theme :global(.dashboard-loading-card) {
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: none;
+}
+
+.theme :global(.sidebar),
+.theme :global(.workspace),
+.theme :global(.inspector),
+.theme :global(.layer-editor-sidebar),
+.theme :global(.layer-editor-workspace),
+.theme :global(.layer-editor-inspector) {
+  position: relative;
+}
+
+.theme :global(.sidebar)::before,
+.theme :global(.workspace)::before,
+.theme :global(.inspector)::before,
+.theme :global(.layer-editor-sidebar)::before,
+.theme :global(.layer-editor-workspace)::before,
+.theme :global(.layer-editor-inspector)::before {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  color: rgba(0, 47, 167, 0.16);
+  font-size: 40px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.08em;
+  pointer-events: none;
+}
+
+.theme :global(.sidebar)::before,
+.theme :global(.layer-editor-sidebar)::before {
+  content: "01";
+}
+
+.theme :global(.workspace)::before,
+.theme :global(.layer-editor-workspace)::before {
+  content: "02";
+}
+
+.theme :global(.inspector)::before,
+.theme :global(.layer-editor-inspector)::before {
+  content: "03";
+}
+
+.theme :global(.login-card) {
+  width: min(720px, 100%);
+}
+
+.theme :global(.login-card-head),
+.theme :global(.project-hub-toolbar),
+.theme :global(.workspace-top),
+.theme :global(.layer-editor-toolbar),
+.theme :global(.preview-card-head),
+.theme :global(.dashboard-toolbar),
+.theme :global(.dashboard-header),
+.theme :global(.dashboard-userbar),
+.theme :global(.editor-sidebar-actions) {
+  border-bottom: 1px solid var(--border);
+}
+
+.theme :global(.login-card-head),
+.theme :global(.login-card-footer),
+.theme :global(.workspace-top),
+.theme :global(.layer-editor-toolbar),
+.theme :global(.preview-card-head),
+.theme :global(.dashboard-toolbar),
+.theme :global(.project-hub-toolbar),
+.theme :global(.editor-sidebar-actions) {
+  padding-bottom: 14px;
+}
+
+.theme :global(.login-card-copy h1),
+.theme :global(.project-hub-copy h1),
+.theme :global(.workspace-top h1),
+.theme :global(.layer-editor-toolbar h1),
+.theme :global(.auth-card-title h1) {
+  margin: 0;
+  color: var(--text);
+  font-size: clamp(34px, 4vw, 64px);
+  font-weight: 800;
+  line-height: 0.92;
+  letter-spacing: -0.06em;
+  text-transform: none;
+}
+
+.theme :global(.project-hub-copy),
+.theme :global(.workspace-top-main),
+.theme :global(.login-card-copy),
+.theme :global(.dashboard-toolbar-copy) {
+  gap: 10px;
+}
+
+.theme :global(.eyebrow),
+.theme :global(.login-card-kicker),
+.theme :global(.section-head span),
+.theme :global(.preview-card-head span),
+.theme :global(.workspace-summary-pill),
+.theme :global(.workspace-summary-pill.soft),
+.theme :global(.project-card-app),
+.theme :global(.dashboard-role-chip),
+.theme :global(.login-meta-pill),
+.theme :global(.audit-pill),
+.theme :global(.clone-summary-chip),
+.theme :global(.clone-summary-chip.soft),
+.theme :global(.edit-badge),
+.theme :global(.dashboard-stat-card span),
+.theme :global(.project-hub-summary span) {
+  color: var(--primary);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.theme :global(.workspace-summary-pill),
+.theme :global(.workspace-summary-pill.soft),
+.theme :global(.project-card-app),
+.theme :global(.dashboard-role-chip),
+.theme :global(.login-meta-pill),
+.theme :global(.audit-pill),
+.theme :global(.clone-summary-chip),
+.theme :global(.clone-summary-chip.soft),
+.theme :global(.edit-badge) {
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--surface);
+}
+
+.theme :global(.clone-summary-chip.soft),
+.theme :global(.workspace-summary-pill.soft),
+.theme :global(.edit-badge),
+.theme :global(.dashboard-role-chip) {
+  color: var(--muted);
+}
+
+.theme :global(.login-card-icon),
+.theme :global(.brand-mark),
+.theme :global(.workspace-app-icon),
+.theme :global(.project-card-canvas),
+.theme :global(.layer-thumb-icon) {
+  border-radius: 0;
+  background: var(--primary-soft);
+  box-shadow: none;
+  color: var(--primary);
+}
+
+.theme :global(.brand-mark),
+.theme :global(.project-card-canvas) {
+  border: 1px solid var(--border);
+}
+
+.theme :global(.project-card-canvas) {
+  background: #ffffff;
+  box-shadow: inset 0 0 0 1px rgba(0, 47, 167, 0.12);
+}
+
+.theme :global(.project-hub-summary strong),
+.theme :global(.dashboard-stat-card strong) {
+  font-size: clamp(32px, 4vw, 54px);
+  font-weight: 800;
+  line-height: 0.9;
+  letter-spacing: -0.06em;
+}
+
+.theme :global(.project-card-body strong),
+.theme :global(.workspace-app-card strong),
+.theme :global(.clone-card-foot strong),
+.theme :global(.layer-editor-brand strong),
+.theme :global(.dashboard-brand strong) {
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+}
+
+.theme :global(.project-card),
+.theme :global(.workspace-app-card),
+.theme :global(.preview-card),
+.theme :global(.panel-section),
+.theme :global(.sidebar-section),
+.theme :global(.dashboard-stat-card),
+.theme :global(.dashboard-create-card),
+.theme :global(.clone-detail-list div),
+.theme :global(.clone-summary-row),
+.theme :global(.project-empty-state) {
+  overflow: hidden;
+}
+
+.theme :global(.project-card)::before,
+.theme :global(.workspace-app-card)::before,
+.theme :global(.preview-card)::before,
+.theme :global(.panel-section)::before,
+.theme :global(.sidebar-section)::before,
+.theme :global(.dashboard-stat-card)::before,
+.theme :global(.dashboard-create-card)::before,
+.theme :global(.clone-detail-list div)::before,
+.theme :global(.clone-summary-row)::before,
+.theme :global(.project-empty-state)::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 4px;
+  background: var(--primary);
+}
+
+.theme :global(button),
+.theme :global(input),
+.theme :global(select),
+.theme :global(textarea) {
+  border-radius: 0;
+}
+
+.theme :global(button:focus-visible),
+.theme :global(input:focus-visible),
+.theme :global(select:focus-visible),
+.theme :global(textarea:focus-visible) {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.theme :global(input:not([type="checkbox"]):not([type="radio"])),
+.theme :global(select),
+.theme :global(textarea) {
+  border: 1px solid var(--text);
+  background: #ffffff;
+  color: var(--text);
+  box-shadow: none;
+}
+
+.theme :global(.login-mode-row),
+.theme :global(.auth-mode-row),
+.theme :global(.mode-toggle),
+.theme :global(.project-card-preview),
+.theme :global(.layer-thumb),
+.theme :global(.clone-checkbox-row) {
+  border-radius: 0;
+}
+
+.theme :global(.login-mode-row button),
+.theme :global(.auth-mode-row button),
+.theme :global(.mode-toggle button) {
+  border-radius: 0;
+}
+
+.theme :global(.primary-button),
+.theme :global(.login-primary-button) {
+  border: 1px solid var(--primary);
+  border-radius: 0;
+  background: var(--primary);
+  color: #ffffff;
+  box-shadow: none;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.theme :global(.secondary-button),
+.theme :global(.danger-button),
+.theme :global(.login-secondary-button),
+.theme :global(.login-link-button),
+.theme :global(.icon-button),
+.theme :global(.text-button) {
+  border: 1px solid var(--text);
+  border-radius: 0;
+  background: #ffffff;
+  color: var(--text);
+  box-shadow: none;
+}
+
+.theme :global(.login-link-button),
+.theme :global(.text-button) {
+  padding: 0 12px;
+}
+
+.theme :global(.primary-button:hover:not(:disabled)),
+.theme :global(.secondary-button:hover:not(:disabled)),
+.theme :global(.danger-button:hover:not(:disabled)),
+.theme :global(.login-primary-button:hover:not(:disabled)),
+.theme :global(.login-secondary-button:hover:not(:disabled)) {
+  transform: translate(-1px, -1px);
+  box-shadow: 1px 1px 0 var(--text);
+}
+
+.theme :global(.primary-button:hover:not(:disabled)),
+.theme :global(.login-primary-button:hover:not(:disabled)) {
+  background: #001f73;
+  border-color: #001f73;
+}
+
+.theme :global(.secondary-button:hover:not(:disabled)),
+.theme :global(.danger-button:hover:not(:disabled)),
+.theme :global(.login-secondary-button:hover:not(:disabled)) {
+  background: var(--surface-tonal);
+}
+
+.theme :global(.notice),
+.theme :global(.dashboard-banner),
+.theme :global(.login-status),
+.theme :global(.audit-pill.ready),
+.theme :global(.audit-pill.warn),
+.theme :global(.dashboard-banner.ok),
+.theme :global(.dashboard-banner.warn),
+.theme :global(.field-status.ok) {
+  border-color: var(--text);
+  background: #ffffff;
+  color: var(--text);
+}
+
+.theme :global(.notice),
+.theme :global(.dashboard-banner),
+.theme :global(.login-status) {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border-left-width: 4px;
+  border-left-color: var(--primary);
+}
+
+.theme :global(.notice.ok),
+.theme :global(.notice.warn),
+.theme :global(.notice.error),
+.theme :global(.notice.busy),
+.theme :global(.dashboard-banner.ok),
+.theme :global(.dashboard-banner.warn),
+.theme :global(.login-status.ok),
+.theme :global(.login-status.warn) {
+  border-left-color: var(--primary);
+}
+
+.theme :global(.workspace-title-field),
+.theme :global(.workspace-top),
+.theme :global(.workspace-top-side),
+.theme :global(.workspace-summary-strip),
+.theme :global(.notice-row),
+.theme :global(.preview-grid),
+.theme :global(.toolbar),
+.theme :global(.clone-summary-stack),
+.theme :global(.clone-toggle-grid),
+.theme :global(.dashboard-userbar),
+.theme :global(.dashboard-stats),
+.theme :global(.dashboard-create-grid) {
+  gap: 12px;
+}
+
+.theme :global(.section-head),
+.theme :global(.preview-card-head) {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.theme :global(.section-head b),
+.theme :global(.preview-card-head b) {
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+}
+
+.theme :global(.workspace),
+.theme :global(.layer-editor-workspace) {
+  background:
+    linear-gradient(to right, rgba(17, 17, 17, 0.04) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(17, 17, 17, 0.04) 1px, transparent 1px),
+    rgba(255, 255, 255, 0.92);
+  background-size: 36px 36px;
+}
+
+.theme :global(.preview-card),
+.theme :global(.html-preview-card),
+.theme :global(.clone-source-frame),
+.theme :global(.clone-card-stage),
+.theme :global(.layer-preview-surface),
+.theme :global(.selected-layer-preview) {
+  background: linear-gradient(to right, rgba(17, 17, 17, 0.05) 1px, transparent 1px), #f9fafc;
+  background-size: 20px 20px;
+}
+
+.theme :global(.preview-card.selected),
+.theme :global(.clone-variant-card.selected),
+.theme :global(.layer-asset-row.active),
+.theme :global(.mode-toggle button.active),
+.theme :global(.login-mode-row button.active),
+.theme :global(.auth-mode-row button.active) {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  color: var(--primary);
+  box-shadow: none;
+}
+
+.theme :global(.project-hub-toolbar),
+.theme :global(.dashboard-toolbar) {
+  gap: 18px;
+  align-items: end;
+}
+
+.theme :global(.project-hub-search),
+.theme :global(.project-create-input),
+.theme :global(.dashboard-create-inline input) {
+  border: 1px solid var(--text);
+  border-radius: 0;
+  background: #ffffff;
+}
+
+.theme :global(.project-hub-search input),
+.theme :global(.project-create-input input),
+.theme :global(.dashboard-create-inline input),
+.theme :global(.workspace-title-field input) {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.theme :global(.workspace-title-field input) {
+  font-size: clamp(28px, 3vw, 44px);
+  font-weight: 800;
+  letter-spacing: -0.06em;
+}
+
+.theme :global(.upload-zone) {
+  border: 1px dashed var(--text);
+  border-radius: 0;
+  background: rgba(255, 255, 255, 0.86);
+}
+
+.theme :global(.workspace-scope-status),
+.theme :global(.workspace-app-open),
+.theme :global(.workspace-app-launch),
+.theme :global(.project-card-link) {
+  color: var(--primary);
+}
+
+.theme :global(.workspace-app-progressbar) {
+  height: 6px;
+  border-radius: 0;
+  background: rgba(17, 17, 17, 0.1);
+}
+
+.theme :global(.workspace-app-progressbar span) {
+  border-radius: 0;
+}
+
+.theme :global(.property-list > div) {
+  min-height: 36px;
+  border-bottom-color: rgba(17, 17, 17, 0.08);
+}
+
+.theme :global(.project-card:hover),
+.theme :global(.workspace-app-card:hover),
+.theme :global(.preview-card:hover) {
+  transform: translate(-2px, -2px);
+  box-shadow: 2px 2px 0 var(--text);
+}
+
+.theme :global(.project-card:hover),
+.theme :global(.workspace-app-card:hover) {
+  border-color: var(--text);
+}
+
+.theme :global(.login-card-actions),
+.theme :global(.dashboard-userbar),
+.theme :global(.workspace-app-actions),
+.theme :global(.project-card-side),
+.theme :global(.workspace-app-footer),
+.theme :global(.clone-mini-actions),
+.theme :global(.workspace-account-bar) {
+  gap: 10px;
+}
+
+.theme :global(.project-card-date),
+.theme :global(.workspace-app-footer small),
+.theme :global(.workspace-app-empty),
+.theme :global(.workspace-app-heading p),
+.theme :global(.dashboard-subtitle),
+.theme :global(.login-card-copy p),
+.theme :global(.login-panel-note),
+.theme :global(.clone-card-foot small),
+.theme :global(.clone-detail-list small),
+.theme :global(.layer-file-summary small),
+.theme :global(.property-list span),
+.theme :global(.project-empty-state p) {
+  color: var(--muted);
+}
+
+.theme :global(.dashboard-state) {
+  padding: 88px 24px 24px;
+  color: var(--text);
+}
+
+.theme :global(.dashboard-state .secondary-button) {
+  margin-top: 12px;
+}
+
+@media (max-width: 1180px) {
+  .theme :global(.studio-shell),
+  .theme :global(.layer-editor-shell) {
+    height: auto;
+    min-height: 100vh;
+    grid-template-columns: 1fr;
+    overflow: auto;
+  }
+
+  .theme :global(.sidebar),
+  .theme :global(.workspace),
+  .theme :global(.inspector),
+  .theme :global(.layer-editor-sidebar),
+  .theme :global(.layer-editor-workspace),
+  .theme :global(.layer-editor-inspector) {
+    min-height: 0;
+  }
+}
+
+@media (max-width: 920px) {
+  .theme :global(.project-hub-toolbar),
+  .theme :global(.dashboard-toolbar),
+  .theme :global(.workspace-top),
+  .theme :global(.dashboard-header) {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .theme :global(.login-card-head),
+  .theme :global(.login-card-footer) {
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+
+  .theme :global(.project-card) {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .folio {
+    padding: 0 12px;
+    font-size: 10px;
+    letter-spacing: 0.1em;
+  }
+
+  .folio span:last-child,
+  .axis,
+  .corner {
+    display: none;
+  }
+
+  .theme :global(.login-stage),
+  .theme :global(.dashboard-shell.project-hub-shell),
+  .theme :global(.studio-shell),
+  .theme :global(.layer-editor-shell),
+  .theme :global(.dashboard-state) {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .theme :global(.project-hub-copy h1),
+  .theme :global(.workspace-top h1),
+  .theme :global(.layer-editor-toolbar h1),
+  .theme :global(.login-card-copy h1) {
+    font-size: clamp(30px, 12vw, 48px);
+  }
+}

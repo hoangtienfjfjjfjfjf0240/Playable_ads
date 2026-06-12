@@ -15,9 +15,10 @@ import {
   Trash2,
   UserRound,
 } from 'lucide-react';
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getSupabaseBrowser } from '../lib/supabase-browser';
+import { withStudioRoutePrefix } from '../lib/studio-routes';
 import type { StudioProjectGalleryItem, StudioProjectGalleryPayload } from '../lib/types';
 
 type AuthMode = 'login' | 'signup';
@@ -40,8 +41,10 @@ export function StudioDashboard() {
   const supabase = useMemo(() => getSupabaseBrowser(), []);
   const galleryRequestRef = useRef(0);
   const router = useRouter();
+  const pathname = usePathname();
   const accessToken = session?.access_token || '';
   const normalizedNewProjectName = normalizeProjectNameInput(newProjectName);
+  const routeFor = useCallback((href: string) => withStudioRoutePrefix(pathname, href), [pathname]);
 
   const loadGallery = useCallback(
     async (token: string, options?: { silent?: boolean }) => {
@@ -203,8 +206,8 @@ export function StudioDashboard() {
     const projectName = normalizedNewProjectName || buildAutoProjectName();
     setError('');
     setMessage('');
-    router.push(`/apps/${gallery.defaultAppId}?new=1&name=${encodeURIComponent(projectName)}`);
-  }, [gallery?.defaultAppId, normalizedNewProjectName, router]);
+    router.push(routeFor(`/apps/${gallery.defaultAppId}?new=1&name=${encodeURIComponent(projectName)}`));
+  }, [gallery?.defaultAppId, normalizedNewProjectName, routeFor, router]);
 
   const deleteProject = useCallback(
     async (projectId: string) => {
@@ -425,7 +428,7 @@ export function StudioDashboard() {
       <section className="project-grid">
         {filteredProjects.length ? (
           filteredProjects.map((project) => {
-            const href = `/apps/${project.appId}?projectId=${encodeURIComponent(project.id)}`;
+            const href = routeFor(`/apps/${project.appId}?projectId=${encodeURIComponent(project.id)}`);
             return (
               <article key={project.id} className="project-card">
                 <button className="project-card-main" type="button" onClick={() => router.push(href)}>

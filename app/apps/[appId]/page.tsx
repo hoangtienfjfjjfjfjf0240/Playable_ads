@@ -1,12 +1,26 @@
-'use client';
+import { redirect } from 'next/navigation';
 
-import { useParams } from 'next/navigation';
-import { PlayableStudio } from '../../../components/PlayableStudio';
+type AppStudioPageProps = {
+  params: Promise<{ appId: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+};
 
-export default function AppStudioPage() {
-  const params = useParams<{ appId: string }>();
-  const appId = Array.isArray(params?.appId) ? params.appId[0] : params?.appId;
+export default async function AppStudioPage({ params, searchParams }: AppStudioPageProps) {
+  const { appId } = await params;
+  const resolvedSearchParams = await searchParams;
+  const query = new URLSearchParams();
 
-  if (!appId) return null;
-  return <PlayableStudio appId={appId} />;
+  for (const [key, value] of Object.entries(resolvedSearchParams)) {
+    if (Array.isArray(value)) {
+      value.forEach((item) => query.append(key, item));
+      continue;
+    }
+
+    if (typeof value === 'string') {
+      query.set(key, value);
+    }
+  }
+
+  const queryString = query.toString();
+  redirect(`/v2/apps/${appId}${queryString ? `?${queryString}` : ''}`);
 }

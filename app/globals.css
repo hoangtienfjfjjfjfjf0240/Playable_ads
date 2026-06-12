@@ -2415,6 +2415,12 @@ img {
   margin-top: 10px;
 }
 
+.reference-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
 .history-list {
   display: grid;
   gap: 8px;
@@ -2435,6 +2441,20 @@ img {
   background: var(--surface);
   text-align: left;
   transition: transform 150ms ease, background 150ms ease, border-color 150ms ease;
+}
+
+.reference-row {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface);
 }
 
 .history-row {
@@ -2471,6 +2491,16 @@ img {
   background: linear-gradient(180deg, #ffffff, var(--primary-soft));
 }
 
+.reference-thumb {
+  width: 46px;
+  height: 46px;
+  display: block;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-container);
+}
+
 .source-icon {
   width: 30px;
   height: 30px;
@@ -2485,6 +2515,10 @@ img {
   min-width: 0;
 }
 
+.reference-meta {
+  min-width: 0;
+}
+
 .source-meta strong {
   display: block;
   overflow: hidden;
@@ -2493,6 +2527,25 @@ img {
   font-weight: 900;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.reference-meta strong {
+  display: block;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reference-meta small,
+.source-meta small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
 }
 
 .source-state.ok {
