@@ -319,12 +319,12 @@ const layerMeta: Record<LayerTarget, { label: string; group: string }> = {
   text: { label: 'Chữ nhắc', group: 'Lời nhắc' },
 };
 const toolbarLayerMeta: Record<LayerTarget, string> = {
-  image: 'ẢNH',
-  hand: 'TAY',
+  image: 'IMAGE',
+  hand: 'HAND',
   scan: 'SCAN',
   asset: 'FX',
   cta: 'CTA',
-  text: 'CHỮ',
+  text: 'TEXT',
 };
 const layerPickerTargets: LayerTarget[] = ['image', 'hand', 'scan', 'cta', 'text'];
 const storeTargetMeta: Record<
@@ -2371,7 +2371,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         <AlertCircle size={18} />
         <span>Trình chỉnh sửa này yêu cầu đăng nhập Supabase.</span>
         <Link href={homeHref} className="secondary-button">
-          Quay lại thư viện
+          Quay lại home
         </Link>
       </main>
     );
@@ -2395,7 +2395,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
             <div className="editor-sidebar-actions">
               <button type="button" className="secondary-button" onClick={() => void leaveEditor(homeHref)}>
                 <ArrowLeft size={15} />
-                Thư viện
+                Home
               </button>
               <button
                 type="button"
@@ -2403,7 +2403,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                 onClick={() => void leaveEditor(routeFor(`/apps/${appId}/clone`))}
               >
                 <FileCode2 size={15} />
-                Chế độ clone
+                Clone playable
               </button>
             </div>
 
@@ -2440,7 +2440,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
 
         <section className="sidebar-section">
           <div className="section-head">
-            <span>Nguồn đã nhập</span>
+            <span>Hàng chờ</span>
             <b>{sources.length}</b>
           </div>
           <div className="source-list">
@@ -2552,7 +2552,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
 
         <section className="sidebar-section asset-library-section">
           <div className="section-head">
-            <span>Asset thao tác</span>
+            <span>Thư viện asset</span>
             <b>{assetLibraryCount}</b>
           </div>
           <div className="asset-tabs" role="tablist" aria-label="Thư viện asset">
@@ -2684,81 +2684,68 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
           )}
           <div className="workspace-top-side">
             <div className="toolbar">
-              <div className="toolbar-group">
-                <span className="toolbar-group-label">Biến thể</span>
-                <label className="batch-count-control" title={`1-${MAX_VARIANT_COUNT} variants`}>
-                  <span>Số lượng</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={MAX_VARIANT_COUNT}
-                    value={targetVariantCount}
-                    onChange={(event) => setProjectSetting('variantCount', normalizeVariantCount(event.target.value))}
-                  />
-                </label>
-                <button className="ghost-button" type="button" onClick={cloneSourceToVariants} disabled={!activeSource || busy}>
-                  <Grid2X2 size={16} />
-                  Tạo nháp x{targetVariantCount}
+              <label className="batch-count-control" title={`1-${MAX_VARIANT_COUNT} variants`}>
+                <span>Count</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={MAX_VARIANT_COUNT}
+                  value={targetVariantCount}
+                  onChange={(event) => setProjectSetting('variantCount', normalizeVariantCount(event.target.value))}
+                />
+              </label>
+              <button className="ghost-button" type="button" onClick={cloneSourceToVariants} disabled={!activeSource || busy}>
+                <Grid2X2 size={16} />
+                Draft x{targetVariantCount}
+              </button>
+              <div className="fit-toggle" role="group" aria-label="Frame fit mode">
+                <button
+                  className={activeImageFit === 'cover' ? 'active' : ''}
+                  type="button"
+                  onClick={() => setProjectSetting('imageFit', 'cover')}
+                  title="Fill the 9:16 frame without distortion"
+                >
+                  <Maximize2 size={14} />
+                  Fill
+                </button>
+                <button
+                  className={activeImageFit === 'contain' ? 'active' : ''}
+                  type="button"
+                  onClick={() => setProjectSetting('imageFit', 'contain')}
+                  title="Show the full image without cropping"
+                >
+                  <Minimize2 size={14} />
+                  Fit
                 </button>
               </div>
-
-              <div className="toolbar-group">
-                <span className="toolbar-group-label">Khung</span>
-                <div className="fit-toggle" role="group" aria-label="Frame fit mode">
-                  <button
-                    className={activeImageFit === 'cover' ? 'active' : ''}
-                    type="button"
-                    onClick={() => setProjectSetting('imageFit', 'cover')}
-                    title="Fill the 9:16 frame without distortion"
-                  >
-                    <Maximize2 size={14} />
-                    Lấp đầy
-                  </button>
-                  <button
-                    className={activeImageFit === 'contain' ? 'active' : ''}
-                    type="button"
-                    onClick={() => setProjectSetting('imageFit', 'contain')}
-                    title="Show the full image without cropping"
-                  >
-                    <Minimize2 size={14} />
-                    Vừa khung
-                  </button>
+              <div className="align-panel" role="group" aria-label={`Align ${toolbarLayerLabel}`}>
+                <div className="align-panel-head">
+                  <span className="align-panel-title">Align</span>
+                  <strong>{toolbarLayerLabel}</strong>
                 </div>
-                {canAlignSelectedLayer ? (
-                  <div className="align-panel" role="group" aria-label={`Align ${toolbarLayerLabel}`}>
-                    <div className="align-panel-head">
-                      <span className="align-panel-title">Căn layer</span>
-                      <strong>{toolbarLayerLabel}</strong>
-                    </div>
-                    <div className="align-panel-grid">
-                      {alignPanelItems.map(({ command, title, Icon }) => (
-                        <button
-                          key={command}
-                          type="button"
-                          onClick={() => alignSelectedLayer(command)}
-                          disabled={!canAlignSelectedLayer}
-                          title={title}
-                          aria-label={title}
-                        >
-                          <Icon size={14} />
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
+                <div className="align-panel-grid">
+                  {alignPanelItems.map(({ command, title, Icon }) => (
+                    <button
+                      key={command}
+                      type="button"
+                      onClick={() => alignSelectedLayer(command)}
+                      disabled={!canAlignSelectedLayer}
+                      title={title}
+                      aria-label={title}
+                    >
+                      <Icon size={14} />
+                    </button>
+                  ))}
+                </div>
               </div>
-
-              <div className="toolbar-group toolbar-group-actions">
-                <span className="toolbar-group-label">AI</span>
-                <button className="secondary-button" type="button" onClick={detectAllVariants} disabled={!variants.length || busy}>
-                  <Crosshair size={16} />
-                  Tự đặt vị trí
-                </button>
-                <button className="primary-button" type="button" onClick={generateVariants} disabled={!activeSource?.dataUrl || busy || !activeAiReady}>
-                  {busy ? <Loader2 className="spin" size={16} /> : <WandSparkles size={16} />}
-                  Tạo AI x{targetVariantCount}
-                </button>
-              </div>
+              <button className="secondary-button" type="button" onClick={detectAllVariants} disabled={!variants.length || busy}>
+                <Crosshair size={16} />
+                Auto plan
+              </button>
+              <button className="primary-button" type="button" onClick={generateVariants} disabled={!activeSource?.dataUrl || busy || !activeAiReady}>
+                {busy ? <Loader2 className="spin" size={16} /> : <WandSparkles size={16} />}
+                Create {targetVariantCount}
+              </button>
             </div>
           </div>
         </header>
@@ -2773,15 +2760,6 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
               <RefreshCw size={16} />
             </button>
           </div>
-        </div>
-
-        <div className="editor-workflow-strip" aria-label="Trạng thái editor">
-          <span className={`editor-workflow-chip ${activeSource ? 'ready' : ''}`}>{activeSource ? '1. Đã có nguồn' : '1. Chưa có nguồn'}</span>
-          <span className={`editor-workflow-chip ${settings.prompt.trim() ? 'ready' : ''}`}>{settings.prompt.trim() ? '2. Đã có brief' : '2. Thêm brief'}</span>
-          <span className={`editor-workflow-chip ${variants.length ? 'ready' : ''}`}>{variants.length ? `3. ${variants.length} biến thể` : '3. Tạo biến thể'}</span>
-          <span className={`editor-workflow-chip ${lastSavedAt ? 'ready' : ''}`}>
-            {autosaveState === 'saving' ? '4. Đang lưu' : lastSavedAt ? '4. Đã lưu' : '4. Chưa lưu'}
-          </span>
         </div>
 
         <section className={`preview-grid orientation-${settings.orientation} ${paused ? 'is-paused' : ''}`}>
@@ -2817,7 +2795,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                 onClick={() => setSelectedLayer('image')}
               >
                 <ImagePlus size={15} />
-                Ảnh
+                Image
               </button>
               <button
                 className={selectedLayer === 'hand' ? 'active' : ''}
@@ -2827,7 +2805,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                 onClick={() => setSelectedLayer('hand')}
               >
                 <Hand size={15} />
-                Tay
+                Hand
               </button>
               <button
                 className={selectedLayer === 'scan' ? 'active' : ''}
@@ -2857,7 +2835,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                 onClick={() => setSelectedLayer('text')}
               >
                 <Hash size={15} />
-                Chữ
+                Text
               </button>
             </div>
             <button
@@ -3013,87 +2991,80 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
               </small>
             </div>
           )}
-          <details className="panel-disclosure" open={!variants.length}>
-            <summary>
-              <span>Đầu ra và batch</span>
-              <small>AI, network, tỷ lệ và các tùy chọn nâng cao</small>
-            </summary>
-            <div className="panel-disclosure-body">
-              <label className="field">
-                <span>Mô hình AI</span>
-                <select value={settings.aiProvider} onChange={(event) => setProjectSetting('aiProvider', event.target.value as ProjectSettings['aiProvider'])}>
-                  <option value="gemini-flash">Gemini 3.1 Flash Image</option>
-                  <option value="gemini-pro">Gemini 3 Pro Image</option>
-                  <option value="openai">GPT Image</option>
-                </select>
-              </label>
-              {activeAiStatusMessage && <div className="field-status warn">{activeAiStatusMessage}</div>}
-              <div className="field-grid">
-                <label className="field">
-                  <span>Network xem trước</span>
-                  <select value={settings.network} onChange={(event) => setProjectSetting('network', event.target.value as ProjectSettings['network'])}>
-                    {networkExportTargets.map((network) => (
-                      <option key={network} value={network}>
-                        {networkLabels[network]}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="field">
-                  <span>Tỷ lệ</span>
-                  <select value={settings.orientation} onChange={(event) => setProjectSetting('orientation', event.target.value as ProjectSettings['orientation'])}>
-                    <option value="portrait">9:16</option>
-                    <option value="landscape">16:9</option>
-                  </select>
-                </label>
-              </div>
-              <div className="section-title compact">
-                <h3>Thiết lập batch</h3>
-              </div>
-              <label className="check-row">
-                <input
-                  type="checkbox"
-                  checked={settings.syncAllVariants}
-                  onChange={(event) => setProjectSetting('syncAllVariants', event.target.checked)}
-                />
-                <span>Đồng bộ layer đang chọn sang mọi biến thể đang hiển thị</span>
-              </label>
-              <label className="check-row">
-                <input
-                  type="checkbox"
-                  checked={settings.useAiAnalyze}
-                  onChange={(event) => setProjectSetting('useAiAnalyze', event.target.checked)}
-                />
-                <span>Dùng AI Analyze để tự lên plan</span>
-              </label>
-              <label className="check-row">
-                <input type="checkbox" checked={settings.useClickTag} onChange={(event) => setProjectSetting('useClickTag', event.target.checked)} />
-                <span>Tương thích clickTag</span>
-              </label>
-            </div>
-          </details>
+          <div className="section-title compact">
+            <h3>Đầu ra</h3>
+          </div>
+          <label className="field">
+            <span>Mô hình AI</span>
+            <select value={settings.aiProvider} onChange={(event) => setProjectSetting('aiProvider', event.target.value as ProjectSettings['aiProvider'])}>
+              <option value="gemini-flash">Gemini 3.1 Flash Image</option>
+              <option value="gemini-pro">Gemini 3 Pro Image</option>
+              <option value="openai">GPT Image</option>
+            </select>
+          </label>
+          {activeAiStatusMessage && <div className="field-status warn">{activeAiStatusMessage}</div>}
+          <div className="field-grid">
+            <label className="field">
+              <span>Network xem trước</span>
+              <select value={settings.network} onChange={(event) => setProjectSetting('network', event.target.value as ProjectSettings['network'])}>
+                {networkExportTargets.map((network) => (
+                  <option key={network} value={network}>
+                    {networkLabels[network]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>Tỷ lệ</span>
+              <select value={settings.orientation} onChange={(event) => setProjectSetting('orientation', event.target.value as ProjectSettings['orientation'])}>
+                <option value="portrait">9:16</option>
+                <option value="landscape">16:9</option>
+              </select>
+            </label>
+          </div>
+          <div className="section-title compact">
+            <h3>Thiết lập batch</h3>
+          </div>
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={settings.syncAllVariants}
+              onChange={(event) => setProjectSetting('syncAllVariants', event.target.checked)}
+            />
+            <span>Đồng bộ layer đang chọn sang mọi biến thể đang hiển thị</span>
+          </label>
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={settings.useAiAnalyze}
+              onChange={(event) => setProjectSetting('useAiAnalyze', event.target.checked)}
+            />
+            <span>Dùng AI Analyze để tự lên plan</span>
+          </label>
+          <label className="check-row">
+            <input type="checkbox" checked={settings.useClickTag} onChange={(event) => setProjectSetting('useClickTag', event.target.checked)} />
+            <span>Tương thích clickTag</span>
+          </label>
         </section>
 
-        <details className="panel-disclosure">
-          <summary>
-            <span>Thứ tự layer</span>
-            <small>{layerStackSummary}</small>
-          </summary>
-          <div className="panel-disclosure-body">
-            <LayerStack
-              layer={layerForControls}
-              selectedLayer={selectedLayer}
-              onSelect={setSelectedLayer}
-              onVisibleChange={setLayerVisibility}
-              onMove={moveLayerOrder}
-              onLockChange={setLayerLock}
-            />
-            <button className="secondary-button wide layer-remove-button" type="button" onClick={removeSelectedLayer} disabled={!canRemoveSelectedLayer}>
-              <Trash2 size={15} />
-              Xóa layer
-            </button>
+        <section className="panel-section">
+          <div className="section-title">
+            <h3>Thứ tự layer</h3>
+            <span>{layerStackSummary}</span>
           </div>
-        </details>
+          <LayerStack
+            layer={layerForControls}
+            selectedLayer={selectedLayer}
+            onSelect={setSelectedLayer}
+            onVisibleChange={setLayerVisibility}
+            onMove={moveLayerOrder}
+            onLockChange={setLayerLock}
+          />
+          <button className="secondary-button wide layer-remove-button" type="button" onClick={removeSelectedLayer} disabled={!canRemoveSelectedLayer}>
+            <Trash2 size={15} />
+            Xóa layer
+          </button>
+        </section>
 
         <section className="panel-section">
           <div className="section-title">
@@ -3475,9 +3446,9 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
           </div>
         </section>
 
-        <section className="panel-section action-panel-section">
+        <section className="panel-section">
           <div className="section-title">
-            <h3>Lưu và xuất</h3>
+            <h3>Thao tác</h3>
             <span>
               {selectedVariant
                 ? '5 HTML + 1 GIF'

@@ -34,9 +34,8 @@ export async function buildVariantPreviewGif(variant: PlayableVariant, options: 
   const layer = normalizeLayerSettings(variant.settings);
   const viewport = PREVIEW_DIMENSIONS[options.orientation];
   const durationMs = getPreviewDuration(layer);
-  const targetFrameDelay = 1000 / 30;
-  const frameCount = Math.max(24, Math.min(120, Math.round(durationMs / targetFrameDelay)));
-  const frameDelays = buildThirtyFpsGifDelays(frameCount);
+  const frameCount = Math.max(10, Math.min(18, Math.round(durationMs / 90)));
+  const frameDelay = Math.max(70, Math.round(durationMs / frameCount));
   const assets = await loadGifAssets(layer, variant.dataUrl);
   const canvas = document.createElement('canvas');
   canvas.width = viewport.width;
@@ -45,11 +44,10 @@ export async function buildVariantPreviewGif(variant: PlayableVariant, options: 
   if (!context) throw new Error('Cannot create GIF preview context.');
 
   const frames: string[] = [];
-  let elapsedMs = 0;
   for (let index = 0; index < frameCount; index += 1) {
-    renderVariantFrame(context, variant, layer, assets, options, viewport, elapsedMs);
-    frames.push(canvas.toDataURL('image/png'));
-    elapsedMs += frameDelays[index] || 0;
+    const timeMs = index * frameDelay;
+    renderVariantFrame(context, variant, layer, assets, options, viewport, timeMs);
+    frames.push(canvas.toDataURL('image/jpeg', 0.88));
   }
 
   const response = await fetch('/api/export/gif', {
@@ -59,7 +57,7 @@ export async function buildVariantPreviewGif(variant: PlayableVariant, options: 
     },
     body: JSON.stringify({
       frames,
-      delay: frameDelays,
+      delay: frameDelay,
       loop: options.loop ?? 0,
     }),
   });
@@ -70,11 +68,6 @@ export async function buildVariantPreviewGif(variant: PlayableVariant, options: 
   }
 
   return response.blob();
-}
-
-function buildThirtyFpsGifDelays(frameCount: number) {
-  const pattern = [30, 30, 40];
-  return Array.from({ length: frameCount }, (_, index) => pattern[index % pattern.length]);
 }
 
 export function getVariantPreviewGifName(variantName: string) {
@@ -367,7 +360,7 @@ function drawCtaLayer(
   const centerX = (layer.ctaX / 100) * viewport.width;
   const centerY = (layer.ctaY / 100) * viewport.height;
   const width = (clamp(layer.ctaWidth, 12, 100) / 100) * viewport.width;
-  const height = 42;
+  const height = 48;
   const motion = getCtaTransform(layer.buttonAnimation, progress);
   const gradient = context.createLinearGradient(0, -height / 2, 0, height / 2);
   gradient.addColorStop(0, normalizeHexColor(layer.ctaColorFrom, '#ff9a2f'));
@@ -378,17 +371,11 @@ function drawCtaLayer(
   context.translate(centerX, centerY + motion.y);
   context.rotate(((layer.ctaRotation + motion.rotation) * Math.PI) / 180);
   context.scale(motion.scaleX, motion.scaleY);
-  context.shadowColor = `rgba(${hexToRgb(normalizeHexColor(layer.ctaShadowColor, '#f45100')).r}, ${hexToRgb(normalizeHexColor(layer.ctaShadowColor, '#f45100')).g}, ${hexToRgb(normalizeHexColor(layer.ctaShadowColor, '#f45100')).b}, 0.34)`;
-  context.shadowBlur = 24;
-  context.shadowOffsetY = 12;
   context.fillStyle = gradient;
-  roundedRect(context, -width / 2, -height / 2, width, height, 8);
+  roundedRect(context, -width / 2, -height / 2, width, height, 10);
   context.fill();
-  context.shadowColor = 'transparent';
-  context.shadowBlur = 0;
-  context.shadowOffsetY = 0;
   context.fillStyle = 'rgba(255,255,255,0.2)';
-  roundedRect(context, -width / 2, -height / 2, width, height * 0.45, 8);
+  roundedRect(context, -width / 2, -height / 2, width, height * 0.45, 10);
   context.fill();
   if (layer.buttonAnimation === 'shine') {
     const shineX = -width + width * 2 * progress;
@@ -402,10 +389,10 @@ function drawCtaLayer(
   }
 
   context.fillStyle = normalizeHexColor(layer.ctaTextColor, '#ffffff');
-  context.font = '900 17px system-ui, sans-serif';
+  context.font = '900 20px system-ui, sans-serif';
   context.textAlign = 'center';
   context.textBaseline = 'middle';
-  context.fillText(truncateText(layer.ctaText || 'INSTALL NOW', 18), 0, 0, width - 28);
+  context.fillText(truncateText(layer.ctaText || 'INSTALL NOW', 18), 0, 0, width - 24);
   context.restore();
 }
 

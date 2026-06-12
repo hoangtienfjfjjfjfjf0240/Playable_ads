@@ -40,10 +40,13 @@ import {
 } from '../lib/playable-clone';
 import type { PlayableAudit, PlayableLayerAsset } from '../lib/playable-layers';
 import {
+  buttonAnimationValues,
+  handMotionValues,
   layerFromPlayablePlan,
   playableIntentLabels,
+  scanStyleValues,
+  textCueAnimationValues,
 } from '../lib/playable-plan';
-import { buttonPresets, handMotionPresets, scanPresets, textCuePresets } from '../lib/presets';
 import { withStudioRoutePrefix } from '../lib/studio-routes';
 import type {
   AiVariantResponseItem,
@@ -624,11 +627,11 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
           <div className="editor-sidebar-actions">
             <Link href={routeFor('/')} className="secondary-button">
               <ArrowLeft size={15} />
-              Thư viện
+              Home
             </Link>
             <Link href={routeFor(`/apps/${appId}`)} className="secondary-button">
               <WandSparkles size={15} />
-              Editor chính
+              Mở editor
             </Link>
             <button className="primary-button editor-primary-action" type="button" onClick={resetCloneWorkspace}>
               <RefreshCw size={15} />
@@ -655,7 +658,7 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
 
         <button className="upload-zone" type="button" onClick={() => fileInputRef.current?.click()}>
           <Upload size={22} />
-          <strong>Nhập playable nguồn</strong>
+          <strong>Nhập playable</strong>
           <span>HTML, HTM</span>
         </button>
         <input
@@ -717,7 +720,7 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
 
         <section className="sidebar-section">
           <div className="section-head">
-            <span>Brief clone</span>
+            <span>Cài đặt</span>
             <b>{settings.variantCount}</b>
           </div>
           <label className="field">
@@ -831,11 +834,11 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
           <div className="action-grid clone-action-grid">
             <button className="primary-button" type="button" onClick={generateCloneBatch} disabled={!analysis || Boolean(busy)}>
               {busy === 'generate' ? <Loader2 className="spin" size={16} /> : <WandSparkles size={16} />}
-              Tạo clone AI
+              Tạo batch clone
             </button>
             <button className="secondary-button" type="button" onClick={exportSelectedNetworks} disabled={!selectedVariant || Boolean(busy)}>
               {busy === 'export' ? <Loader2 className="spin" size={16} /> : <Download size={16} />}
-              Xuất mạng đã chọn
+              Xuất 5 network
             </button>
             <button className="secondary-button" type="button" onClick={exportCloneBatchZip} disabled={!variants.length || Boolean(busy)}>
               {busy === 'zip' ? <Loader2 className="spin" size={16} /> : <Package size={16} />}
@@ -843,7 +846,7 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
             </button>
             <button className="secondary-button" type="button" onClick={openInStudio} disabled={!variants.length || Boolean(busy)}>
               <ExternalLink size={16} />
-              Mở sang editor
+              Mở trong Studio
             </button>
           </div>
         </section>
@@ -851,7 +854,7 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
           <section className="sidebar-section">
             <div className="section-head">
               <span>Chỉnh layer</span>
-              <b>{syncLayerEdits ? 'tất cả' : 'một'}</b>
+              <b>{syncLayerEdits ? 'all' : 'one'}</b>
             </div>
             <label className="clone-checkbox-row">
               <input type="checkbox" checked={syncLayerEdits} onChange={(event) => setSyncLayerEdits(event.target.checked)} />
@@ -887,9 +890,9 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
               <label className="field">
                 <span>Chuyển động tay</span>
                 <select value={selectedVariant.settings.handMotion} onChange={(event) => updateVariantLayers({ handMotion: event.target.value as LayerSettings['handMotion'] })}>
-                  {handMotionPresets.map((preset) => (
-                    <option key={preset.id} value={preset.id}>
-                      {preset.label}
+                  {handMotionValues.map((value) => (
+                    <option key={value} value={value}>
+                      {value}
                     </option>
                   ))}
                 </select>
@@ -897,9 +900,9 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
               <label className="field">
                 <span>Kiểu scan</span>
                 <select value={selectedVariant.settings.scanStyle} onChange={(event) => updateVariantLayers({ scanStyle: event.target.value as LayerSettings['scanStyle'] })}>
-                  {scanPresets.map((preset) => (
-                    <option key={preset.id} value={preset.id}>
-                      {preset.label}
+                  {scanStyleValues.map((value) => (
+                    <option key={value} value={value}>
+                      {value}
                     </option>
                   ))}
                 </select>
@@ -909,9 +912,9 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
               <label className="field">
                 <span>Hiệu ứng CTA</span>
                 <select value={selectedVariant.settings.buttonAnimation} onChange={(event) => updateVariantLayers({ buttonAnimation: event.target.value as LayerSettings['buttonAnimation'] })}>
-                  {buttonPresets.map((preset) => (
-                    <option key={preset.id} value={preset.id}>
-                      {preset.label}
+                  {buttonAnimationValues.map((value) => (
+                    <option key={value} value={value}>
+                      {value}
                     </option>
                   ))}
                 </select>
@@ -919,72 +922,64 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
               <label className="field">
                 <span>Hiệu ứng chữ nhắc</span>
                 <select value={selectedVariant.settings.cueAnimation} onChange={(event) => updateVariantLayers({ cueAnimation: event.target.value as LayerSettings['cueAnimation'] })}>
-                  {textCuePresets.map((preset) => (
-                    <option key={preset.id} value={preset.id}>
-                      {preset.label}
+                  {textCueAnimationValues.map((value) => (
+                    <option key={value} value={value}>
+                      {value}
                     </option>
                   ))}
                 </select>
               </label>
             </div>
-            <details className="panel-disclosure">
-              <summary>
-                <span>Tinh chỉnh nâng cao</span>
-                <small>Tọa độ và kích thước từng layer</small>
-              </summary>
-              <div className="panel-disclosure-body">
-                <div className="field-grid two">
-                  <label className="field">
-                    <span>Hand X</span>
-                    <input type="number" min={0} max={100} value={selectedVariant.settings.handX} onChange={(event) => updateVariantLayers({ handX: clampInteger(Number(event.target.value), 0, 100) })} />
-                  </label>
-                  <label className="field">
-                    <span>Hand Y</span>
-                    <input type="number" min={0} max={100} value={selectedVariant.settings.handY} onChange={(event) => updateVariantLayers({ handY: clampInteger(Number(event.target.value), 0, 100) })} />
-                  </label>
-                </div>
-                <div className="field-grid two">
-                  <label className="field">
-                    <span>Scan X</span>
-                    <input type="number" min={0} max={100} value={selectedVariant.settings.scanX} onChange={(event) => updateVariantLayers({ scanX: clampInteger(Number(event.target.value), 0, 100) })} />
-                  </label>
-                  <label className="field">
-                    <span>Scan Y</span>
-                    <input type="number" min={0} max={100} value={selectedVariant.settings.scanY} onChange={(event) => updateVariantLayers({ scanY: clampInteger(Number(event.target.value), 0, 100) })} />
-                  </label>
-                </div>
-                <div className="field-grid two">
-                  <label className="field">
-                    <span>CTA X</span>
-                    <input type="number" min={0} max={100} value={selectedVariant.settings.ctaX} onChange={(event) => updateVariantLayers({ ctaX: clampInteger(Number(event.target.value), 0, 100) })} />
-                  </label>
-                  <label className="field">
-                    <span>CTA Y</span>
-                    <input type="number" min={0} max={100} value={selectedVariant.settings.ctaY} onChange={(event) => updateVariantLayers({ ctaY: clampInteger(Number(event.target.value), 0, 100) })} />
-                  </label>
-                </div>
-                <div className="field-grid two">
-                  <label className="field">
-                    <span>Cue X</span>
-                    <input type="number" min={0} max={100} value={selectedVariant.settings.cueX} onChange={(event) => updateVariantLayers({ cueX: clampInteger(Number(event.target.value), 0, 100) })} />
-                  </label>
-                  <label className="field">
-                    <span>Cue Y</span>
-                    <input type="number" min={0} max={100} value={selectedVariant.settings.cueY} onChange={(event) => updateVariantLayers({ cueY: clampInteger(Number(event.target.value), 0, 100) })} />
-                  </label>
-                </div>
-                <div className="field-grid two">
-                  <label className="field">
-                    <span>Kích thước tay</span>
-                    <input type="number" min={48} max={220} value={selectedVariant.settings.handSize} onChange={(event) => updateVariantLayers({ handSize: clampInteger(Number(event.target.value), 48, 220) })} />
-                  </label>
-                  <label className="field">
-                    <span>Kích thước scan</span>
-                    <input type="number" min={64} max={320} value={selectedVariant.settings.scanSize} onChange={(event) => updateVariantLayers({ scanSize: clampInteger(Number(event.target.value), 64, 320) })} />
-                  </label>
-                </div>
-              </div>
-            </details>
+            <div className="field-grid two">
+              <label className="field">
+                <span>Hand X</span>
+                <input type="number" min={0} max={100} value={selectedVariant.settings.handX} onChange={(event) => updateVariantLayers({ handX: clampInteger(Number(event.target.value), 0, 100) })} />
+              </label>
+              <label className="field">
+                <span>Hand Y</span>
+                <input type="number" min={0} max={100} value={selectedVariant.settings.handY} onChange={(event) => updateVariantLayers({ handY: clampInteger(Number(event.target.value), 0, 100) })} />
+              </label>
+            </div>
+            <div className="field-grid two">
+              <label className="field">
+                <span>Scan X</span>
+                <input type="number" min={0} max={100} value={selectedVariant.settings.scanX} onChange={(event) => updateVariantLayers({ scanX: clampInteger(Number(event.target.value), 0, 100) })} />
+              </label>
+              <label className="field">
+                <span>Scan Y</span>
+                <input type="number" min={0} max={100} value={selectedVariant.settings.scanY} onChange={(event) => updateVariantLayers({ scanY: clampInteger(Number(event.target.value), 0, 100) })} />
+              </label>
+            </div>
+            <div className="field-grid two">
+              <label className="field">
+                <span>CTA X</span>
+                <input type="number" min={0} max={100} value={selectedVariant.settings.ctaX} onChange={(event) => updateVariantLayers({ ctaX: clampInteger(Number(event.target.value), 0, 100) })} />
+              </label>
+              <label className="field">
+                <span>CTA Y</span>
+                <input type="number" min={0} max={100} value={selectedVariant.settings.ctaY} onChange={(event) => updateVariantLayers({ ctaY: clampInteger(Number(event.target.value), 0, 100) })} />
+              </label>
+            </div>
+            <div className="field-grid two">
+              <label className="field">
+                <span>Cue X</span>
+                <input type="number" min={0} max={100} value={selectedVariant.settings.cueX} onChange={(event) => updateVariantLayers({ cueX: clampInteger(Number(event.target.value), 0, 100) })} />
+              </label>
+              <label className="field">
+                <span>Cue Y</span>
+                <input type="number" min={0} max={100} value={selectedVariant.settings.cueY} onChange={(event) => updateVariantLayers({ cueY: clampInteger(Number(event.target.value), 0, 100) })} />
+              </label>
+            </div>
+            <div className="field-grid two">
+              <label className="field">
+                <span>Kích thước tay</span>
+                <input type="number" min={48} max={220} value={selectedVariant.settings.handSize} onChange={(event) => updateVariantLayers({ handSize: clampInteger(Number(event.target.value), 48, 220) })} />
+              </label>
+              <label className="field">
+                <span>Kích thước scan</span>
+                <input type="number" min={64} max={320} value={selectedVariant.settings.scanSize} onChange={(event) => updateVariantLayers({ scanSize: clampInteger(Number(event.target.value), 64, 320) })} />
+              </label>
+            </div>
             <div className="clone-mini-actions">
               <button className="secondary-button slim" type="button" onClick={resetVariantLayersFromInference} disabled={!inference}>
                 Khôi phục theo plan nguồn

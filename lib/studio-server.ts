@@ -135,39 +135,33 @@ export async function getProjectGalleryPayload(ctx: StudioRequestContext): Promi
     listProjectRowsForWorkspaces(
       ctx.supabase,
       workspaceIds,
-      'id,name,workspace_id,app_id,owner_user_id,owner_email,source_image_path,variants,created_at,updated_at',
+      'id,name,workspace_id,app_id,owner_user_id,owner_email,created_at,updated_at',
       { renderableOnly: true },
     ),
   ]);
   const workspaceMap = new Map(workspaces.map((workspace) => [workspace.id, workspace]));
   const appMap = new Map(apps.map((app) => [app.id, app]));
-  const items = (
-    await Promise.all(
-      projects.map(async (project) => {
-        const workspace = workspaceMap.get(project.workspace_id);
-        const app = appMap.get(project.app_id);
-        if (!workspace || !app) return null;
 
-        const previewPath = pickGalleryPreviewPath(project);
-        const previewImageDataUrl = previewPath ? await downloadStorageAsDataUrl(ctx.supabase, previewPath).catch(() => '') : '';
+  const items = projects.flatMap((project) => {
+    const workspace = workspaceMap.get(project.workspace_id);
+    const app = appMap.get(project.app_id);
+    if (!workspace || !app) return [];
 
-        return {
-          id: String(project.id),
-          name: String(project.name || 'Untitled Project'),
-          workspaceId: String(project.workspace_id),
-          appId: String(project.app_id),
-          appName: String(app.name || DEFAULT_APP_NAME),
-          workspaceName: String(workspace.name || 'Workspace'),
-          ownerUserId: String(project.owner_user_id),
-          ownerEmail: String(project.owner_email || ''),
-          createdAt: String(project.created_at),
-          updatedAt: String(project.updated_at),
-          variantCount: Array.isArray(project.variants) ? project.variants.length : 0,
-          previewImageDataUrl,
-        } satisfies StudioProjectGalleryItem;
-      }),
-    )
-  ).filter((item): item is StudioProjectGalleryItem => Boolean(item));
+    return [
+      {
+        id: String(project.id),
+        name: String(project.name || 'Untitled Project'),
+        workspaceId: String(project.workspace_id),
+        appId: String(project.app_id),
+        appName: String(app.name || DEFAULT_APP_NAME),
+        workspaceName: String(workspace.name || 'Workspace'),
+        ownerUserId: String(project.owner_user_id),
+        ownerEmail: String(project.owner_email || ''),
+        createdAt: String(project.created_at),
+        updatedAt: String(project.updated_at),
+      } satisfies StudioProjectGalleryItem,
+    ];
+  });
 
   return {
     user: {
@@ -179,18 +173,6 @@ export async function getProjectGalleryPayload(ctx: StudioRequestContext): Promi
     defaultAppId: pickDefaultAppId(apps, workspaces, ctx.user.id),
     projects: items,
   };
-}
-
-function pickGalleryPreviewPath(project: Pick<ProjectRow, 'source_image_path' | 'variants'>) {
-  if (Array.isArray(project.variants)) {
-    for (const variant of project.variants as Array<Record<string, unknown>>) {
-      if (typeof variant.image_path === 'string' && variant.image_path) {
-        return variant.image_path;
-      }
-    }
-  }
-
-  return typeof project.source_image_path === 'string' ? project.source_image_path : '';
 }
 
 export async function createWorkspace(ctx: StudioRequestContext, rawName: string, rawDefaultAppName = DEFAULT_APP_NAME) {
