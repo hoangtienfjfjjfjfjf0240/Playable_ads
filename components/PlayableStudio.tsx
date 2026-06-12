@@ -98,7 +98,6 @@ import type {
   StudioAppSummary,
   StudioEditorContextPayload,
   StudioProjectDetail,
-  StudioCloneImportPayload,
 } from '../lib/types';
 
 type HealthState = {
@@ -126,6 +125,8 @@ type GenerationHistoryEntry = {
   variants: PlayableVariant[];
 };
 
+type PromptSuggestionState = 'idle' | 'loading' | 'ready' | 'error';
+
 type PlayableStudioProps = {
   appId?: string;
 };
@@ -139,6 +140,11 @@ const uid = () => {
 
 const createWorkerStatuses = (count: number, status: AiWorkerStatus) =>
   Array.from({ length: normalizeVariantCount(count) }, () => status);
+
+const shouldAutoApplyPrompt = (prompt: string) => {
+  const normalized = prompt.trim();
+  return !normalized || normalized === legacyDefaultProjectPrompt || normalized === defaultProjectPrompt;
+};
 
 async function mapWithConcurrency<T, R>(items: T[], concurrency: number, worker: (item: T, index: number) => Promise<R>) {
   const results = new Array<R>(items.length);
@@ -647,7 +653,6 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
   const referenceInputRef = useRef<HTMLInputElement>(null);
   const brandAssetInputRef = useRef<HTMLInputElement>(null);
   const handDataUrlCache = useRef(new Map<string, string>());
-  const cloneImportCheckedRef = useRef(false);
   const freshProjectHandledRef = useRef(false);
   const projectQueryHandledRef = useRef('');
   const currentProjectIdRef = useRef('');
@@ -658,6 +663,8 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
   const lastFailedSnapshotRef = useRef('');
   const draftBaselineSnapshotRef = useRef('');
   const pendingPersistRef = useRef(false);
+  const promptValueRef = useRef('');
+  const promptSuggestionRequestRef = useRef(0);
   const supabase = useMemo(() => getSupabaseBrowser(), []);
   const router = useRouter();
   const pathname = usePathname();
@@ -691,10 +698,19 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
   const [generationHistory, setGenerationHistory] = useState<GenerationHistoryEntry[]>([]);
   const [assetLibraryTab, setAssetLibraryTab] = useState<AssetLibraryTab>('hand');
   const [selectedPreviewMetrics, setSelectedPreviewMetrics] = useState<FrameMetrics | null>(null);
+  const [promptSuggestion, setPromptSuggestion] = useState('');
+  const [promptSuggestionTitle, setPromptSuggestionTitle] = useState('');
+  const [promptSuggestionSourceName, setPromptSuggestionSourceName] = useState('');
+  const [promptSuggestionStatus, setPromptSuggestionStatus] = useState<PromptSuggestionState>('idle');
+  const [promptSuggestionError, setPromptSuggestionError] = useState('');
 
   useEffect(() => {
     setSettings((current) => (current.imageFit === 'cover' ? current : { ...current, imageFit: 'cover' }));
   }, []);
+
+  useEffect(() => {
+    promptValueRef.current = settings.prompt;
+  }, [settings.prompt]);
 
   const activeSource = useMemo(
     () => sources.find((source) => source.id === activeSourceId) || sources[0] || null,
@@ -847,57 +863,6 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
   }, []);
 
   useEffect(() => {
-    if (!appScopedEditor || !appId || currentProjectId || sources.length || variants.length || cloneImportCheckedRef.current) return;
-    cloneImportCheckedRef.current = true;
-
-    try {
-      const raw = window.sessionStorage.getItem(`playable-clone-import:${appId}`);
-      if (!raw) return;
-      window.sessionStorage.removeItem(`playable-clone-import:${appId}`);
-
-      const payload = JSON.parse(raw) as StudioCloneImportPayload;
-      if (payload.appId !== appId || !payload.source || !Array.isArray(payload.variants) || !payload.variants.length) {
-        return;
-      }
-
-      const source = {
-        ...payload.source,
-        hotspot: payload.source.hotspot || defaultHotspot(),
-        createdAt: payload.source.createdAt || Date.now(),
-      } satisfies SourceItem;
-
-      setCurrentProjectId('');
-      currentProjectIdRef.current = '';
-      pendingProjectIdRef.current = '';
-      setSettings(normalizeProjectSettings(payload.settings || createDefaultProjectSettings()));
-      setReferenceImages(normalizeReferenceImageInputs(payload.referenceImages));
-      setSources([source]);
-      setActiveSourceId(source.id);
-      setVariants(
-        payload.variants.map((variant, index) => ({
-          ...variant,
-          sourceId: source.id,
-          index: Number(variant.index) || index + 1,
-          hotspot: variant.hotspot || source.hotspot || defaultHotspot(),
-          settings: normalizeLayerSettings(variant.settings),
-        })),
-      );
-      setSelectedVariantId(payload.variants[0]?.id || '');
-      markProjectForPersist();
-      setSelectedLayer('hand');
-      setHtmlLayerSettings(normalizeLayerSettings(defaultLayerSettings));
-      lastSavedSnapshotRef.current = '';
-      draftBaselineSnapshotRef.current = '';
-      setAutosaveState('idle');
-      setAutosaveError('');
-      setLastSavedAt(null);
-      setNotice({ tone: 'ok', text: `Đã nhập ${payload.variants.length} biến thể clone từ Clone Playable.` });
-    } catch (error) {
-      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Cannot import clone payload.' });
-    }
-  }, [appId, appScopedEditor, currentProjectId, markProjectForPersist, sources.length, variants.length]);
-
-  useEffect(() => {
     if (busy) return;
     setAiWorkers((current) => (current.length === targetVariantCount ? current : createWorkerStatuses(targetVariantCount, 'idle')));
   }, [busy, targetVariantCount]);
@@ -967,6 +932,63 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
   const setProjectSetting = <K extends keyof ProjectSettings>(key: K, value: ProjectSettings[K]) => {
     setSettings((current) => ({ ...current, [key]: value }));
   };
+
+  const applyPromptSuggestion = useCallback(() => {
+    if (!promptSuggestion) return;
+    setProjectSetting('prompt', promptSuggestion);
+    markProjectForPersist();
+  }, [markProjectForPersist, promptSuggestion]);
+
+  const suggestPromptForSource = useCallback(
+    async (source: Pick<SourceItem, 'id' | 'name' | 'kind' | 'dataUrl'>, options?: { autoApply?: boolean }) => {
+      if (!source.dataUrl) return;
+
+      const requestId = promptSuggestionRequestRef.current + 1;
+      promptSuggestionRequestRef.current = requestId;
+      setPromptSuggestionStatus('loading');
+      setPromptSuggestionError('');
+      setPromptSuggestionSourceName(source.name);
+
+      try {
+        const response = await fetch('/api/ai/suggest-prompt', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            imageDataUrl: source.dataUrl,
+            sourceKind: source.kind,
+            sourceName: source.name,
+            language: 'vi',
+          }),
+        });
+        const payload = (await response.json().catch(() => ({}))) as {
+          prompt?: string;
+          title?: string;
+          error?: string;
+        };
+        if (!response.ok) {
+          throw new Error(payload.error || `Prompt suggestion failed (${response.status})`);
+        }
+
+        const suggestedPrompt = String(payload.prompt || '').trim();
+        if (!suggestedPrompt) throw new Error('Prompt suggestion returned empty content.');
+        if (promptSuggestionRequestRef.current !== requestId) return;
+
+        setPromptSuggestion(suggestedPrompt);
+        setPromptSuggestionTitle(String(payload.title || '').trim() || `Gợi ý từ ${source.name}`);
+        setPromptSuggestionStatus('ready');
+
+        if (options?.autoApply && shouldAutoApplyPrompt(promptValueRef.current)) {
+          setProjectSetting('prompt', suggestedPrompt);
+          markProjectForPersist();
+        }
+      } catch (error) {
+        if (promptSuggestionRequestRef.current !== requestId) return;
+        setPromptSuggestionStatus('error');
+        setPromptSuggestionError(error instanceof Error ? error.message : 'Không gợi ý được prompt từ ảnh.');
+      }
+    },
+    [markProjectForPersist],
+  );
 
   const saveProject = useCallback(
     async ({ silent = false, force = false }: { silent?: boolean; force?: boolean } = {}) => {
@@ -1332,6 +1354,11 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
 
     setBusy(true);
     setNotice({ tone: 'busy', text: 'Đang đọc file' });
+    setPromptSuggestion('');
+    setPromptSuggestionTitle('');
+    setPromptSuggestionSourceName('');
+    setPromptSuggestionStatus('idle');
+    setPromptSuggestionError('');
     const imported: SourceItem[] = [];
 
     try {
@@ -1378,6 +1405,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
       const htmlFrameReadyCount = imported.filter((source) => source.kind === 'html' && source.dataUrl).length;
       const htmlFrameFailedCount = imported.filter((source) => source.kind === 'html' && !source.dataUrl).length;
       if (firstVisualSource) {
+        void suggestPromptForSource(firstVisualSource, { autoApply: true });
         const drafts = await createDraftVariants(firstVisualSource);
         setVariants(drafts);
         setSelectedVariantId(drafts[0]?.id || '');
@@ -2397,14 +2425,6 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                 <ArrowLeft size={15} />
                 Home
               </button>
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={() => void leaveEditor(routeFor(`/apps/${appId}/clone`))}
-              >
-                <FileCode2 size={15} />
-                Clone playable
-              </button>
             </div>
 
           </section>
@@ -2874,6 +2894,44 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
             <span>Mô tả</span>
             <textarea rows={5} value={settings.prompt} onChange={(event) => setProjectSetting('prompt', event.target.value)} />
           </label>
+          <div className="prompt-suggestion-row">
+            <div
+              className={`field-status ${
+                promptSuggestionStatus === 'error' ? 'warn' : promptSuggestionStatus === 'ready' ? 'ok' : ''
+              }`}
+            >
+              {promptSuggestionStatus === 'loading' ? (
+                <>
+                  <Loader2 className="spin" size={14} />
+                  <span>Đang gợi ý prompt từ ảnh nguồn...</span>
+                </>
+              ) : promptSuggestionStatus === 'ready' ? (
+                <span>{promptSuggestionTitle || `Đã có prompt gợi ý từ ${promptSuggestionSourceName}`}</span>
+              ) : promptSuggestionStatus === 'error' ? (
+                <span>{promptSuggestionError || 'Không gợi ý được prompt từ ảnh.'}</span>
+              ) : (
+                <span>Tải ảnh nguồn để hệ thống gợi ý prompt tự động.</span>
+              )}
+            </div>
+            <div className="prompt-suggestion-actions">
+              <button
+                className="ghost-button slim"
+                type="button"
+                onClick={applyPromptSuggestion}
+                disabled={!promptSuggestion || settings.prompt.trim() === promptSuggestion.trim()}
+              >
+                Dùng gợi ý
+              </button>
+              <button
+                className="ghost-button slim"
+                type="button"
+                onClick={() => activeSource?.dataUrl && void suggestPromptForSource(activeSource, { autoApply: false })}
+                disabled={!activeSource?.dataUrl || promptSuggestionStatus === 'loading'}
+              >
+                Gợi ý lại
+              </button>
+            </div>
+          </div>
           <label className="field">
             <span>Ngôn ngữ localize</span>
             <select value={settings.locale} onChange={(event) => setProjectSetting('locale', event.target.value as ProjectSettings['locale'])}>

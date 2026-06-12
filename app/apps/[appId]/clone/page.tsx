@@ -6,5 +6,5 @@ type ClonePlayablePageProps = {
 
 export default async function ClonePlayablePage({ params }: ClonePlayablePageProps) {
   const { appId } = await params;
-  redirect(`/v2/apps/${appId}/clone`);
+  redirect(`/v2/apps/${appId}`);
 }

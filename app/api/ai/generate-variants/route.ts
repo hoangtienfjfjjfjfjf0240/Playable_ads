@@ -355,6 +355,7 @@ function buildVariantPrompt(
     'Treat any prompt mention of hand, cue text, CTA text, tap instruction, or scan box as runtime overlay guidance, not bitmap content.',
     'Do not add letterboxing, pillarboxing, black bars, outer borders, padding, or empty margins.',
     'Do not include editor UI, hand cursor, tap finger, scan target boxes, CTA buttons, install buttons, tap/click cue text, timelines, or export controls.',
+    'If text, CTA, badges, search bars, labels, or UI chrome from the reference are removed, do not leave behind empty white boxes, rounded blank bars, hollow pills, ghost cards, placeholder buttons, or vacant panels. Recompose that area with believable background detail, product detail, lighting, texture, or integrated design elements that still feel native to the source creative.',
     safeZoneInstruction,
   ]
     .filter(Boolean)
@@ -405,7 +406,7 @@ function buildMobileSafeZoneInstruction(hasBrandAssetOverlay: boolean) {
     : '';
   return [
     'Respect mobile overlay safe zones. Keep the main subject, device, product, and any allowed headline comfortably inside the central composition instead of pushing them down to the bottom edge.',
-    'Avoid placing important content, dense detail, faces, phones, or text inside the bottom 18% of the frame. That lower area should stay simpler for runtime CTA overlays, but not look like an obvious empty band.',
+    'Avoid placing important content, dense detail, faces, phones, or text inside the bottom 14% of the frame. That lower area should stay visually quieter for runtime CTA overlays, but must still contain continuous background texture, gradient, lighting, or scene detail instead of an obvious empty band.',
     'Do not crop or anchor the main subject too low. Keep enough breathing room above the bottom safe zone and away from the left and right edges.',
     topLeftRule,
   ]
@@ -479,12 +480,12 @@ type InImageTextPolicy = 'remove-all' | 'primary-only' | 'keep-all';
 function buildInImageTextPolicyInstruction(prompt: string) {
   const policy = resolveInImageTextPolicy(prompt);
   if (policy === 'keep-all') {
-    return 'In-image text policy: keep only the text explicitly requested in the prompt or clearly essential from the reference. Preserve the main headline and short supporting copy when needed, but still remove CTA buttons, scan labels, editor UI, disclaimers, and tiny filler text. If the prompt requests another language, use that language only for the kept text.';
+    return 'In-image text policy: keep only the text explicitly requested in the prompt or clearly essential from the reference. Preserve the main headline and short supporting copy when needed, but still remove CTA buttons, scan labels, editor UI, disclaimers, and tiny filler text. If text is removed, also remove or redesign its container so no blank UI shells remain. If the prompt requests another language, use that language only for the kept text.';
   }
   if (policy === 'primary-only') {
-    return 'In-image text policy: keep only one short primary headline when the prompt explicitly asks for text. Remove all secondary copy, badges, labels, pricing, stickers, paragraphs, CTA buttons, and fine print. If the prompt requests another language, use that language only for the single kept headline.';
+    return 'In-image text policy: keep only one short primary headline when the prompt explicitly asks for text. Remove all secondary copy, badges, labels, pricing, stickers, paragraphs, CTA buttons, and fine print. When removing those elements, do not leave empty bars, blank cards, or placeholder pills behind. If the prompt requests another language, use that language only for the single kept headline.';
   }
-  return 'In-image text policy: remove all visible text from the generated image by default, including any text that appears in the reference image. Do not render headlines, subheads, labels, price tags, badges, CTA buttons, captions, disclaimers, or paragraph copy inside the image.';
+  return 'In-image text policy: remove all visible text from the generated image by default, including any text that appears in the reference image. Do not render headlines, subheads, labels, price tags, badges, CTA buttons, captions, disclaimers, or paragraph copy inside the image. Replace removed text containers with natural scene detail or integrated graphic treatment so the result does not contain blank bars, empty cards, or placeholder UI shells.';
 }
 
 function resolveInImageTextPolicy(prompt: string): InImageTextPolicy {

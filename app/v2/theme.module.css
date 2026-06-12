@@ -26,6 +26,7 @@
     var(--bg);
   background-size: 72px 72px;
   color: var(--text);
+  font-family: var(--font-sans), "Segoe UI", Arial, sans-serif;
 }
 
 .folio {
@@ -43,7 +44,7 @@
   background: rgba(247, 247, 248, 0.92);
   backdrop-filter: blur(8px);
   color: var(--muted);
-  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-family: inherit;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.14em;
@@ -59,7 +60,7 @@
   display: grid;
   gap: 8px;
   color: rgba(17, 17, 17, 0.45);
-  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-family: inherit;
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.16em;
@@ -75,7 +76,7 @@
   bottom: 10px;
   z-index: 60;
   color: rgba(0, 47, 167, 0.12);
-  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-family: inherit;
   font-size: clamp(80px, 11vw, 180px);
   font-weight: 800;
   letter-spacing: -0.08em;
@@ -84,16 +85,19 @@
   user-select: none;
 }
 
-.theme :global(*) {
-  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-}
-
 .theme :global(.login-shell),
 .theme :global(.dashboard-shell),
 .theme :global(.dashboard-state),
 .theme :global(.studio-shell),
 .theme :global(.layer-editor-shell) {
   background: transparent;
+}
+
+.theme :global(button),
+.theme :global(input),
+.theme :global(select),
+.theme :global(textarea) {
+  font-family: inherit;
 }
 
 .theme :global(.login-stage),
