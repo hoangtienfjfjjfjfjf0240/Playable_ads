@@ -309,6 +309,8 @@ function drawAssetLayer(
       textColor: asset.id === 'status-normal' ? '#0f9f6e' : '#0f9f6e',
       dotColor: '#0f9f6e',
     });
+  } else if (asset.category === 'storage' || (asset.category === 'counter' && asset.secondaryValue)) {
+    drawMetricAssetCard(context, asset, size, pingPong(progress));
   } else if (asset.category === 'counter') {
     const counterValue = resolveCounterValue(asset.value || '86', asset.id, progress);
     drawInfoChip(context, {
@@ -747,6 +749,117 @@ function drawScanAsset(context: CanvasRenderingContext2D, assetId: string, size:
   }
 }
 
+function drawMetricAssetCard(context: CanvasRenderingContext2D, asset: ReturnType<typeof getVisualAsset>, size: number, progress: number) {
+  if (asset.displayStyle === 'segmented') {
+    drawSegmentedStorageCard(context, asset, size, progress);
+    return;
+  }
+  const accent = normalizeHexColor(asset.accentColor, asset.category === 'storage' ? '#ef4444' : '#2563eb');
+  const width = size * 0.92;
+  const height = size * 0.72;
+  const title = asset.title || asset.label;
+  const currentValue = resolveCounterValue(asset.value || '0', asset.id, progress, asset.secondaryValue);
+  const barProgress = lerp(asset.fromRatio ?? 0.22, asset.toRatio ?? 0.74, progress);
+
+  context.save();
+  context.fillStyle = '#ffffff';
+  context.strokeStyle = 'rgba(191, 208, 251, 0.82)';
+  context.lineWidth = 2;
+  roundedRect(context, -width / 2, -height / 2, width, height, 14);
+  context.fill();
+  context.stroke();
+
+  context.fillStyle = '#1d4ed8';
+  context.font = `900 ${Math.max(8, Math.round(height * 0.11))}px system-ui, sans-serif`;
+  context.fillText(truncateText(title, 18), -width / 2 + 10, -height / 2 + 14, width - 20);
+
+  context.fillStyle = '#111827';
+  context.font = `900 ${Math.max(13, Math.round(height * 0.2))}px system-ui, sans-serif`;
+  context.fillText(currentValue, -width / 2 + 10, -height / 2 + 34, width - 20);
+
+  context.fillStyle = 'rgba(148, 163, 184, 0.22)';
+  roundedRect(context, -width / 2 + 10, -height / 2 + 42, width - 20, 8, 999);
+  context.fill();
+
+  const gradient = context.createLinearGradient(-width / 2 + 10, 0, width / 2 - 10, 0);
+  gradient.addColorStop(0, accent);
+  gradient.addColorStop(1, '#ffffff');
+  context.fillStyle = gradient;
+  roundedRect(context, -width / 2 + 10, -height / 2 + 42, (width - 20) * clamp(barProgress, 0.04, 1), 8, 999);
+  context.fill();
+
+  context.fillStyle = accent;
+  context.font = `900 ${Math.max(8, Math.round(height * 0.1))}px system-ui, sans-serif`;
+  context.fillText(truncateText(asset.deltaLabel || asset.note, 18), -width / 2 + 10, height / 2 - 8, width - 20);
+  context.restore();
+}
+
+function drawSegmentedStorageCard(context: CanvasRenderingContext2D, asset: ReturnType<typeof getVisualAsset>, size: number, progress: number) {
+  const accent = normalizeHexColor(asset.accentColor, '#ff3b30');
+  const width = size * 1.04;
+  const height = size * 0.84;
+  const title = asset.title || asset.label;
+  const currentValue = resolveCounterValue(asset.value || '0', asset.id, progress, asset.secondaryValue);
+  const barProgress = lerp(asset.fromRatio ?? 0.22, asset.toRatio ?? 0.74, progress);
+  const segments = normalizePreviewSegments(asset.segments);
+  const trackX = -width / 2 + 10;
+  const trackY = -height / 2 + 28;
+  const trackWidth = width - 20;
+  const trackHeight = 12;
+  const usedWidth = trackWidth * clamp(barProgress, 0.04, 1);
+
+  context.save();
+  context.fillStyle = '#ffffff';
+  context.strokeStyle = 'rgba(209, 213, 219, 0.9)';
+  context.lineWidth = 2;
+  roundedRect(context, -width / 2, -height / 2, width, height, 18);
+  context.fill();
+  context.stroke();
+
+  context.fillStyle = '#111827';
+  context.font = `900 ${Math.max(9, Math.round(height * 0.12))}px system-ui, sans-serif`;
+  context.fillText(truncateText(title, 12), -width / 2 + 10, -height / 2 + 16, width * 0.38);
+
+  context.fillStyle = '#6b7280';
+  context.font = `900 ${Math.max(8, Math.round(height * 0.1))}px system-ui, sans-serif`;
+  context.textAlign = 'right';
+  context.fillText(truncateText(currentValue, 24), width / 2 - 10, -height / 2 + 16, width * 0.54);
+  context.textAlign = 'left';
+
+  context.fillStyle = 'rgba(229, 231, 235, 0.98)';
+  roundedRect(context, trackX, trackY, trackWidth, trackHeight, 999);
+  context.fill();
+
+  context.save();
+  roundedRect(context, trackX, trackY, trackWidth, trackHeight, 999);
+  context.clip();
+  let cursor = trackX;
+  for (const segment of segments) {
+    const segmentWidth = usedWidth * segment.ratio;
+    context.fillStyle = normalizeHexColor(segment.color, accent);
+    context.fillRect(cursor, trackY, Math.max(3, segmentWidth - 1), trackHeight);
+    cursor += segmentWidth;
+  }
+  context.restore();
+
+  const legendY = height / 2 - 14;
+  let legendX = -width / 2 + 10;
+  const legendItems = segments.filter((segment) => segment.label).slice(0, 5);
+  context.font = `900 ${Math.max(6, Math.round(height * 0.07))}px system-ui, sans-serif`;
+  for (const segment of legendItems) {
+    const label = truncateText(segment.label || '', 12);
+    context.fillStyle = normalizeHexColor(segment.color, accent);
+    context.beginPath();
+    context.arc(legendX + 4, legendY - 3, 3.5, 0, Math.PI * 2);
+    context.fill();
+    context.fillStyle = '#111827';
+    context.fillText(label, legendX + 11, legendY, 40);
+    legendX += Math.max(42, context.measureText(label).width + 18);
+    if (legendX > width / 2 - 36) break;
+  }
+  context.restore();
+}
+
 function getLayerOrder(layer: LayerSettings) {
   const ordered = Array.isArray(layer.layerOrder) ? layer.layerOrder.filter((item) => item !== 'image') : defaultLayerSettings.layerOrder;
   const unique = Array.from(new Set(ordered));
@@ -792,16 +905,58 @@ function resolveMotionProgress(timeMs: number, speedMs: number) {
   return (timeMs % duration) / duration;
 }
 
-function resolveCounterValue(rawValue: string, assetId: string, progress: number) {
+function resolveCounterValue(rawValue: string, assetId: string, progress: number, targetValue?: string) {
   if (assetId === 'counter-countdown') {
     const value = Math.max(1, 3 - Math.floor(progress * 3));
     return String(value);
+  }
+
+  if (targetValue) {
+    const parsed = parseAnimatedCounterValue(rawValue, targetValue);
+    if (parsed) {
+      const value = lerp(parsed.from, parsed.to, progress);
+      const formatted = parsed.decimals > 0 ? value.toFixed(parsed.decimals) : String(Math.max(0, Math.round(value)));
+      return `${parsed.prefix}${formatted}${parsed.suffix}`.replace(/\s{2,}/g, ' ').trim();
+    }
   }
 
   const numeric = Number.parseFloat(rawValue.replace(/[^\d.]/g, ''));
   if (!Number.isFinite(numeric)) return rawValue;
   const value = Math.max(0, Math.round(numeric * progress));
   return rawValue.includes('%') ? `${value}%` : String(value);
+}
+
+function parseAnimatedCounterValue(rawValue: string, targetValue: string) {
+  const sourceText = rawValue || '';
+  const targetText = targetValue || sourceText;
+  const sourceMatch = sourceText.match(/-?\d+(?:\.\d+)?/);
+  const targetMatch = targetText.match(/-?\d+(?:\.\d+)?/);
+  if (!sourceMatch || !targetMatch) return null;
+
+  const sourceIndex = sourceMatch.index ?? 0;
+  const targetIndex = targetMatch.index ?? 0;
+  const sourceNumber = Number.parseFloat(sourceMatch[0]);
+  const targetNumber = Number.parseFloat(targetMatch[0]);
+  if (!Number.isFinite(sourceNumber) || !Number.isFinite(targetNumber)) return null;
+
+  return {
+    from: sourceNumber,
+    to: targetNumber,
+    decimals: Math.max((sourceMatch[0].split('.')[1] || '').length, (targetMatch[0].split('.')[1] || '').length),
+    prefix: targetText.slice(0, targetIndex) || sourceText.slice(0, sourceIndex),
+    suffix:
+      targetText.slice(targetIndex + targetMatch[0].length) ||
+      sourceText.slice(sourceIndex + sourceMatch[0].length),
+  };
+}
+
+function normalizePreviewSegments(segments?: Array<{ color: string; ratio: number; label?: string }>) {
+  const valid = (segments || []).filter((segment) => Number.isFinite(segment.ratio) && segment.ratio > 0);
+  const total = valid.reduce((sum, segment) => sum + segment.ratio, 0) || 1;
+  return valid.map((segment) => ({
+    ...segment,
+    ratio: segment.ratio / total,
+  }));
 }
 
 function resolveCueText(text: string, animation: LayerSettings['cueAnimation'], progress: number) {

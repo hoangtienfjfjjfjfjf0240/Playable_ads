@@ -47,6 +47,14 @@ export interface HtmlPatchInput {
   previewMode?: boolean;
 }
 
+export interface PlayableStoreRuntimeScriptInput {
+  store: StoreRuntimeConfig;
+  network: NetworkTarget;
+  useClickTag: boolean;
+  previewMode?: boolean;
+  preserveExistingOpenUrl?: boolean;
+}
+
 export const networkExportTargets: NetworkTarget[] = ['unity', 'applovin', 'google', 'mintegral', 'moloco'];
 
 export const networkLabels: Record<NetworkTarget, string> = {
@@ -177,7 +185,7 @@ export function generateImagePlayableHtml({
   const frameWidthVh = roundCssNumber(frameAspect * 100);
   const frameHeightVw = roundCssNumber(100 / frameAspect);
   const artboard = getImageFrameLayout(layer, image.width, image.height, orientation, imageFit);
-  const networkHeadMarkup = getNetworkHeadMarkup(network);
+  const networkHeadMarkup = buildPlayableNetworkHeadMarkup(network);
   const handMarkup =
     layer.injectHand && handDataUrl
       ? `<img class="ps-hand motion-${escapeHtml(layer.handMotion)}" style="z-index:${getLayerZ(layer, 'hand')}" src="${handDataUrl}" alt="">`
@@ -193,6 +201,7 @@ export function generateImagePlayableHtml({
   const cueMarkup = layer.showCue
     ? `<div class="ps-cue cue-${escapeHtml(layer.cueAnimation)}" style="z-index:${getLayerZ(layer, 'text')}">${escapeHtml(layer.cueText)}</div>`
     : '';
+  const assetMetricCss = buildMetricAssetCss();
   const layerMarkup = getLayerOrder(layer)
     .map((target) => {
       if (target === 'scan') return scanMarkup;
@@ -216,7 +225,7 @@ export function generateImagePlayableHtml({
     html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#f1f4fb;font-family:${previewFontStack};-webkit-user-select:none;user-select:none}
     *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
     .ps-scene{position:fixed;inset:0;overflow:hidden;background:#f1f4fb;touch-action:manipulation}
-    .ps-frame{--target-x:${clamp(layer.handX, 0, 100)}%;--target-y:${clamp(layer.handY, 0, 100)}%;--scan-x:${clamp(layer.scanX, 0, 100)}%;--scan-y:${clamp(layer.scanY, 0, 100)}%;--asset-x:${clamp(layer.assetX, 0, 100)}%;--asset-y:${clamp(layer.assetY, 0, 100)}%;--cta-x:${clamp(layer.ctaX, 0, 100)}%;--cta-y:${clamp(layer.ctaY, 0, 100)}%;--cue-x:${clamp(layer.cueX, 0, 100)}%;--cue-y:${clamp(layer.cueY, 0, 100)}%;--hand-size:${clamp(layer.handSize, 32, 260)}px;--scan-size:${clamp(layer.scanSize, 48, 360)}px;--asset-size:${clamp(layer.assetSize, 48, 280)}px;--asset-speed:${clamp(layer.assetSpeed, 500, 5000)}ms;--scan-speed:${clamp(layer.scanSpeed, 400, 5000)}ms;--scan-delay:${clamp(layer.scanDelay, 0, 3000)}ms;--scan-iterations:${scanIterations};--scan-direction:${scanDirection};--scan-color:${scanColor};--scan-color-rgb:${scanRgb};--scan-scale-start:${clamp(layer.scanScaleStart, .2, 2)};--scan-scale-end:${clamp(layer.scanScaleEnd, .2, 3)};--scan-opacity-start:${clamp(layer.scanOpacityStart / 100, 0, 1)};--scan-opacity-end:${clamp(layer.scanOpacityEnd / 100, 0, 1)};--cta-width:${clamp(layer.ctaWidth, 44, 92)}%;--cta-from:${ctaColorFrom};--cta-to:${ctaColorTo};--cta-text:${ctaTextColor};--cta-shadow-rgb:${ctaShadowRgb};--cue-width:${clamp(layer.cueWidth, 28, 96)}%;--cue-size:${clamp(layer.cueSize, 12, 42)}px;--cue-color:${cueColor};--cue-bg-rgb:${cueBgRgb};--cue-shadow-rgb:${cueShadowRgb};--hand-anchor-x:${scanAnchorOffset.x}px;--hand-anchor-y:${scanAnchorOffset.y}px;--hand-rotation:${clamp(layer.handRotation || 0, -180, 180)}deg;--scan-rotation:${clamp(layer.scanRotation || 0, -180, 180)}deg;--asset-rotation:${clamp(layer.assetRotation || 0, -180, 180)}deg;--cta-rotation:${clamp(layer.ctaRotation || 0, -180, 180)}deg;--cue-rotation:${clamp(layer.cueRotation || 0, -180, 180)}deg;--artboard-x:${artboard.x}%;--artboard-y:${artboard.y}%;--artboard-w:${artboard.widthPercent}%;--artboard-h:${artboard.heightPercent}%;--artboard-rotation:${artboard.rotation}deg;position:absolute;left:50%;top:50%;width:min(100vw,${frameWidthVh}vh);height:min(100vh,${frameHeightVw}vw);transform:translate(-50%,-50%);overflow:hidden;background:#f1f4fb}
+    .ps-frame{--target-x:${clamp(layer.handX, 0, 100)}%;--target-y:${clamp(layer.handY, 0, 100)}%;--scan-x:${clamp(layer.scanX, 0, 100)}%;--scan-y:${clamp(layer.scanY, 0, 100)}%;--asset-x:${clamp(layer.assetX, 0, 100)}%;--asset-y:${clamp(layer.assetY, 0, 100)}%;--cta-x:${clamp(layer.ctaX, 0, 100)}%;--cta-y:${clamp(layer.ctaY, 0, 100)}%;--cue-x:${clamp(layer.cueX, 0, 100)}%;--cue-y:${clamp(layer.cueY, 0, 100)}%;--hand-size:${clamp(layer.handSize, 32, 260)}px;--scan-size:${clamp(layer.scanSize, 48, 360)}px;--asset-size:${clamp(layer.assetSize, 48, 280)}px;--asset-speed:${clamp(layer.assetSpeed, 400, 12000)}ms;--scan-speed:${clamp(layer.scanSpeed, 400, 5000)}ms;--scan-delay:${clamp(layer.scanDelay, 0, 3000)}ms;--scan-iterations:${scanIterations};--scan-direction:${scanDirection};--scan-color:${scanColor};--scan-color-rgb:${scanRgb};--scan-scale-start:${clamp(layer.scanScaleStart, .2, 2)};--scan-scale-end:${clamp(layer.scanScaleEnd, .2, 3)};--scan-opacity-start:${clamp(layer.scanOpacityStart / 100, 0, 1)};--scan-opacity-end:${clamp(layer.scanOpacityEnd / 100, 0, 1)};--cta-width:${clamp(layer.ctaWidth, 44, 92)}%;--cta-from:${ctaColorFrom};--cta-to:${ctaColorTo};--cta-text:${ctaTextColor};--cta-shadow-rgb:${ctaShadowRgb};--cue-width:${clamp(layer.cueWidth, 28, 96)}%;--cue-size:${clamp(layer.cueSize, 12, 42)}px;--cue-color:${cueColor};--cue-bg-rgb:${cueBgRgb};--cue-shadow-rgb:${cueShadowRgb};--hand-anchor-x:${scanAnchorOffset.x}px;--hand-anchor-y:${scanAnchorOffset.y}px;--hand-rotation:${clamp(layer.handRotation || 0, -180, 180)}deg;--scan-rotation:${clamp(layer.scanRotation || 0, -180, 180)}deg;--asset-rotation:${clamp(layer.assetRotation || 0, -180, 180)}deg;--cta-rotation:${clamp(layer.ctaRotation || 0, -180, 180)}deg;--cue-rotation:${clamp(layer.cueRotation || 0, -180, 180)}deg;--artboard-x:${artboard.x}%;--artboard-y:${artboard.y}%;--artboard-w:${artboard.widthPercent}%;--artboard-h:${artboard.heightPercent}%;--artboard-rotation:${artboard.rotation}deg;position:absolute;left:50%;top:50%;width:min(100vw,${frameWidthVh}vh);height:min(100vh,${frameHeightVw}vw);transform:translate(-50%,-50%);overflow:hidden;background:#f1f4fb}
     .ps-backdrop{position:absolute;inset:-3%;width:106%;height:106%;object-fit:cover;filter:blur(18px) saturate(1.04);opacity:.34;transform:scale(1.02);display:block}
     .ps-artboard{position:absolute;left:var(--artboard-x);top:var(--artboard-y);width:var(--artboard-w);height:var(--artboard-h);transform:translate(-50%,-50%);rotate:var(--artboard-rotation);overflow:hidden;background:#f1f4fb}
     .ps-creative{position:absolute;inset:0;width:100%;height:100%;object-fit:${imageFit};display:block;background:#f1f4fb}
@@ -227,6 +236,7 @@ export function generateImagePlayableHtml({
     .ps-asset .asset-preview-custom-image{position:relative;width:100%;height:100%;display:grid;place-items:center}
     .ps-asset .asset-preview-custom-image img{display:block;max-width:100%;max-height:100%;width:100%;height:100%;object-fit:contain}
     .ps-asset .asset-preview b{font-size:clamp(14px,18%,28px);font-weight:900;line-height:1}.ps-asset .asset-preview small{font-size:10px;color:#626b7a;font-weight:800}.ps-asset .asset-preview-ecg,.ps-asset .asset-preview-scan-grid,.ps-asset .asset-preview-scan-crop-box,.ps-asset .asset-preview-scan-photo-frame{border-radius:12px}.asset-preview-ecg i{width:78%;height:54%;background:linear-gradient(135deg,transparent 0 20%,#e11d48 21% 24%,transparent 25% 36%,#e11d48 37% 40%,transparent 41% 54%,#e11d48 55% 58%,transparent 59%),linear-gradient(90deg,rgba(225,29,72,.18) 1px,transparent 1px);background-size:100% 100%,10px 10px}.asset-preview-heart-live-dot,.asset-preview-status-normal{display:inline-flex;gap:6px;padding:0 8px;width:auto;min-width:54px;color:#0f9f6e}.asset-preview-heart-live-dot i,.asset-preview-status-normal i{width:9px;height:9px;border-radius:999px;background:currentColor;box-shadow:0 0 0 5px rgba(15,159,110,.12)}.asset-preview-scan-reticle i,.asset-preview-scan-grid i,.asset-preview-scan-beam i{width:62%;height:62%;border:2px solid #28a5ff;border-radius:999px;box-shadow:0 0 0 7px rgba(37,99,235,.1),inset 0 0 0 1px rgba(37,99,235,.25)}.asset-preview-scan-frame-box i{width:72%;height:56%;border:1.5px solid #7c3cff;border-radius:8px;background:radial-gradient(circle at 0 0,#fff 0 2px,#7c3cff 2px 4px,transparent 5px),radial-gradient(circle at 100% 0,#fff 0 2px,#7c3cff 2px 4px,transparent 5px),radial-gradient(circle at 0 100%,#fff 0 2px,#7c3cff 2px 4px,transparent 5px),radial-gradient(circle at 100% 100%,#fff 0 2px,#7c3cff 2px 4px,transparent 5px),rgba(124,60,255,.05);box-shadow:0 0 8px rgba(124,60,255,.14),inset 0 0 6px rgba(124,60,255,.08)}.asset-preview-scan-grid i{border-radius:8px;background:linear-gradient(90deg,rgba(37,99,235,.18) 1px,transparent 1px),linear-gradient(180deg,rgba(37,99,235,.18) 1px,transparent 1px);background-size:8px 8px}.asset-preview-scan-beam i:after,.asset-preview-scan-vertical-beam i:after{content:"";position:absolute;top:18%;bottom:18%;left:48%;width:3px;background:#28a5ff;box-shadow:0 0 12px #28a5ff}.asset-preview-scan-food-card,.asset-preview-scan-calorie-chip{align-items:end;justify-items:end;padding:6px;color:#e11d48}.asset-preview-scan-food-card i,.asset-preview-scan-crop-box i,.asset-preview-scan-photo-frame i{position:absolute;left:12%;top:14%;width:58%;height:52%;border:2px solid rgba(255,255,255,.95);border-radius:8px;background:radial-gradient(circle at 34% 42%,#fde68a 0 13%,transparent 14%),radial-gradient(circle at 70% 52%,#86efac 0 14%,transparent 15%),linear-gradient(135deg,#fecaca,#bfdbfe);box-shadow:0 0 0 1px rgba(37,99,235,.26),0 0 18px rgba(37,99,235,.28)}.asset-preview-scan-food-card b,.asset-preview-scan-calorie-chip b{position:relative;z-index:1;padding:3px 5px;border-radius:7px;color:#e11d48;background:#fff;font-size:12px;box-shadow:0 1px 3px rgba(15,23,42,.14)}.asset-preview-scan-food-card small,.asset-preview-scan-calorie-chip small{position:absolute;right:8px;bottom:3px;z-index:1}.asset-preview-scan-corner-lock i{width:62%;height:48%;border-radius:8px;background:linear-gradient(#28a5ff,#28a5ff) left top/14px 3px no-repeat,linear-gradient(#28a5ff,#28a5ff) left top/3px 14px no-repeat,linear-gradient(#28a5ff,#28a5ff) right top/14px 3px no-repeat,linear-gradient(#28a5ff,#28a5ff) right top/3px 14px no-repeat,linear-gradient(#28a5ff,#28a5ff) left bottom/14px 3px no-repeat,linear-gradient(#28a5ff,#28a5ff) left bottom/3px 14px no-repeat,linear-gradient(#28a5ff,#28a5ff) right bottom/14px 3px no-repeat,linear-gradient(#28a5ff,#28a5ff) right bottom/3px 14px no-repeat}.asset-preview-scan-nutrition-arrow i{width:48%;height:48%;border-right:4px solid #ef4444;border-bottom:4px solid #ef4444;border-radius:0 0 18px 0;transform:rotate(8deg)}.asset-preview-scan-nutrition-arrow i:after{content:"";position:absolute;right:-8px;bottom:-7px;border-top:7px solid #ef4444;border-left:7px solid transparent;border-right:7px solid transparent;transform:rotate(-38deg)}.asset-preview-scan-barcode i{width:66%;height:48%;border-radius:6px;background:linear-gradient(90deg,#111827 0 3px,transparent 3px 6px,#111827 6px 8px,transparent 8px 12px,#111827 12px 16px,transparent 16px 19px,#111827 19px 22px,transparent 22px 26px,#111827 26px 28px,transparent 28px 33px,#111827 33px 38px,transparent 38px),#fff;box-shadow:inset 0 0 0 2px rgba(37,99,235,.24)}.asset-preview-scan-vertical-beam i{width:66%;height:52%;border:2px solid rgba(37,99,235,.35);border-radius:8px;background:rgba(219,234,254,.72)}.asset-preview-scan-radar-sweep i{width:62%;height:62%;border-radius:999px;background:conic-gradient(from 40deg,rgba(37,99,235,.05),rgba(37,99,235,.82),rgba(37,99,235,.05) 34%,transparent 35%);border:2px solid rgba(37,99,235,.44);box-shadow:inset 0 0 0 7px rgba(37,99,235,.08),0 0 18px rgba(37,99,235,.28)}.asset-motion-pulse{animation:psAssetPulse var(--asset-speed) ease-in-out infinite}.asset-motion-blink{animation:psAssetBlink var(--asset-speed) steps(2,end) infinite}.asset-motion-sweep .asset-preview:after{content:"";position:absolute;top:-18%;bottom:-18%;left:-20%;width:5px;background:linear-gradient(180deg,transparent,rgba(37,99,235,.82),transparent);box-shadow:0 0 18px rgba(37,99,235,.72);animation:psAssetSweep var(--asset-speed) linear infinite}.asset-motion-wave .asset-preview i{animation:psAssetWave var(--asset-speed) ease-in-out infinite}.asset-motion-count .asset-preview{animation:psAssetCount var(--asset-speed) ease-in-out infinite}
+    ${assetMetricCss}
     .scan-ripple{border:3px solid rgba(125,221,255,.9);border-radius:999px;background:transparent;box-shadow:0 0 0 0 rgba(125,221,255,.42),0 0 22px rgba(125,221,255,.46);animation-name:psRipple;animation-duration:var(--scan-speed);animation-timing-function:ease-out;animation-delay:var(--scan-delay);animation-iteration-count:var(--scan-iterations);animation-direction:var(--scan-direction);animation-fill-mode:both;animation-play-state:${layer.scanAutoplay ? 'running' : 'paused'}}
     .scan-ripple:after{content:"";position:absolute;inset:-10px;border:2px solid rgba(125,221,255,.48);border-radius:inherit;animation-name:psRippleHalo;animation-duration:var(--scan-speed);animation-timing-function:ease-out;animation-delay:var(--scan-delay);animation-iteration-count:var(--scan-iterations);animation-direction:var(--scan-direction);animation-fill-mode:both}
     .scan-face{border:0;border-radius:12px;background:linear-gradient(#3b82f6,#3b82f6) left top/26% 3px no-repeat,linear-gradient(#3b82f6,#3b82f6) left top/3px 26% no-repeat,linear-gradient(#3b82f6,#3b82f6) right top/26% 3px no-repeat,linear-gradient(#3b82f6,#3b82f6) right top/3px 26% no-repeat,linear-gradient(#3b82f6,#3b82f6) left bottom/26% 3px no-repeat,linear-gradient(#3b82f6,#3b82f6) left bottom/3px 26% no-repeat,linear-gradient(#3b82f6,#3b82f6) right bottom/26% 3px no-repeat,linear-gradient(#3b82f6,#3b82f6) right bottom/3px 26% no-repeat;box-shadow:none;animation:psFaceScan var(--scan-speed) ease-in-out infinite}
@@ -266,10 +276,12 @@ export function generateImagePlayableHtml({
   <script>
   (function(){
     ${buildStoreRuntimeBody(store, network, useClickTag, previewMode, false)}
+    ${buildAssetCountRuntimeBody()}
     var frame = document.querySelector(".ps-frame");
     var cta = document.querySelector(".ps-cta");
     if (cta) cta.addEventListener("click", function(event){ event.stopPropagation(); window.openUrl(); });
     else if (frame) frame.addEventListener("click", function(){ window.openUrl(); });
+    if (window.psAnimateAssetNumbers) window.psAnimateAssetNumbers(document);
   })();
   </script>
 </body>
@@ -450,12 +462,13 @@ function ensureOpenUrlRuntime(
   useClickTag: boolean,
   previewMode: boolean,
 ) {
-  const runtime = `
-<script id="ps-store-runtime">
-(function(){
-  ${buildStoreRuntimeBody(store, network, useClickTag, previewMode, true)}
-})();
-</script>`;
+  const runtime = buildPlayableStoreRuntimeScript({
+    store,
+    network,
+    useClickTag,
+    previewMode,
+    preserveExistingOpenUrl: true,
+  });
   return insertBeforeBody(html, runtime);
 }
 
@@ -607,15 +620,30 @@ function injectTextCue(html: string, layer: LayerSettings) {
   return insertBeforeBody(html, code);
 }
 
-function getNetworkHeadMarkup(network: NetworkTarget) {
+export function buildPlayableNetworkHeadMarkup(network: NetworkTarget) {
   if (network === 'google') {
     return '<script id="ps-google-exitapi" type="text/javascript" src="https://tpc.googlesyndication.com/pagead/gadgets/html5/api/exitapi.js"></script>';
   }
   return '';
 }
 
+export function buildPlayableStoreRuntimeScript({
+  store,
+  network,
+  useClickTag,
+  previewMode = false,
+  preserveExistingOpenUrl = false,
+}: PlayableStoreRuntimeScriptInput) {
+  return `
+<script id="ps-store-runtime">
+(function(){
+  ${buildStoreRuntimeBody(store, network, useClickTag, previewMode, preserveExistingOpenUrl)}
+})();
+</script>`;
+}
+
 function ensureNetworkHead(html: string, network: NetworkTarget) {
-  const code = getNetworkHeadMarkup(network);
+  const code = buildPlayableNetworkHeadMarkup(network);
   if (!code || /exitapi\.js/i.test(html)) return html;
   return insertBeforeHeadEnd(html, code);
 }
@@ -724,12 +752,16 @@ function renderAssetMarkup(layer: LayerSettings) {
   }
 
   const asset = getVisualAsset(layer.assetId);
-  return `<div class="ps-asset asset-motion-${escapeHtml(asset.motion)}" style="z-index:${getLayerZ(layer, 'asset')}">${renderVisualAssetMarkup(layer.assetId)}</div>`;
+  return `<div class="ps-asset asset-motion-${escapeHtml(asset.motion)}" style="z-index:${getLayerZ(layer, 'asset')}">${renderVisualAssetMarkup(layer.assetId, layer.assetSpeed)}</div>`;
 }
 
-function renderVisualAssetMarkup(assetId: string) {
+function renderVisualAssetMarkup(assetId: string, durationMs?: number) {
   const asset = getVisualAsset(assetId);
   const value = escapeHtml(asset.value || '');
+
+  if (asset.category === 'storage' || (asset.category === 'counter' && asset.secondaryValue)) {
+    return renderMetricAssetMarkup(assetId, durationMs);
+  }
 
   if (asset.category === 'counter') {
     const suffix = asset.id === 'counter-bpm' ? 'BPM' : asset.id === 'counter-countdown' ? 'tap' : 'score';
@@ -752,6 +784,102 @@ function renderVisualAssetMarkup(assetId: string) {
   }
 
   return `<span class="asset-preview asset-preview-${escapeHtml(asset.id)}"><b>&#9829; ${value || '86'}</b></span>`;
+}
+
+function renderMetricAssetMarkup(assetId: string, durationMs?: number) {
+  const asset = getVisualAsset(assetId);
+  const accent = normalizeHexColor(asset.accentColor, asset.category === 'storage' ? '#ef4444' : '#2563eb');
+  const accentRgb = hexToRgbTriplet(accent);
+  const fromRatio = clamp(asset.fromRatio ?? 0.22, 0.04, 1);
+  const toRatio = clamp(asset.toRatio ?? 0.74, 0.04, 1);
+  if (asset.displayStyle === 'segmented') {
+    const liveValueMarkup = renderAnimatedAssetValueMarkup(asset, 'asset-preview-storage-value asset-preview-live-number', durationMs);
+    const segments = normalizeAssetSegments(asset.segments)
+      .map(
+        (segment) =>
+          `<i class="asset-preview-storage-segment" style="--segment-share:${segment.ratio};--segment-color:${normalizeHexColor(segment.color, accent)}"></i>`,
+      )
+      .join('');
+    const legend = normalizeAssetSegments(asset.segments)
+      .filter((segment) => segment.label)
+      .slice(0, 5)
+      .map(
+        (segment) =>
+          `<span class="asset-preview-storage-legend-item"><i style="background:${normalizeHexColor(segment.color, accent)}"></i><span>${escapeHtml(segment.label || '')}</span></span>`,
+      )
+      .join('');
+    return `<span class="asset-preview asset-preview-${escapeHtml(asset.id)} asset-preview-storage-segmented" style="--metric-accent:${accent};--metric-accent-rgb:${accentRgb};--metric-from:${fromRatio};--metric-to:${toRatio}"><span class="asset-preview-storage-header"><small class="asset-preview-storage-title">${escapeHtml(asset.title || asset.label)}</small>${liveValueMarkup}</span><span class="asset-preview-storage-track" aria-hidden="true"><span class="asset-preview-storage-fill">${segments}</span></span><span class="asset-preview-storage-legend">${legend}</span></span>`;
+  }
+
+  const typeClass = asset.category === 'storage' ? 'asset-preview-storage-card' : 'asset-preview-metric-card';
+  const liveValueMarkup = renderAnimatedAssetValueMarkup(asset, 'asset-preview-live-number', durationMs);
+  return `<span class="asset-preview asset-preview-${escapeHtml(asset.id)} ${typeClass}" style="--metric-accent:${accent};--metric-accent-rgb:${accentRgb};--metric-from:${fromRatio};--metric-to:${toRatio}"><small class="asset-preview-metric-title">${escapeHtml(asset.title || asset.label)}</small><span class="asset-preview-metric-values">${liveValueMarkup}</span><span class="asset-preview-metric-bar"><i></i></span><em>${escapeHtml(asset.deltaLabel || asset.note)}</em></span>`;
+}
+
+function buildMetricAssetCss() {
+  return `.asset-preview-storage-card,.asset-preview-metric-card,.asset-preview-storage-segmented{width:100%;min-width:0;height:auto;min-height:64px;display:grid;justify-items:start;gap:5px;padding:8px;overflow:hidden;border-radius:12px;color:#111827;background:linear-gradient(180deg,#fff 0%,#eef4ff 100%);box-shadow:inset 0 0 0 1px rgba(191,208,251,.62),0 8px 18px rgba(37,99,235,.08)}.asset-preview-storage-segmented{min-height:78px}.asset-preview-metric-title{max-width:100%;overflow:hidden;color:#1d4ed8;font-size:9px;font-weight:900;line-height:1;text-overflow:ellipsis;text-transform:uppercase;white-space:nowrap}.asset-preview-metric-values{width:100%;display:flex;align-items:center;min-height:18px}.asset-preview-live-number{display:inline-flex;align-items:center;gap:4px;white-space:nowrap;font-size:15px;font-weight:900;line-height:1}.ps-asset .asset-preview b.asset-preview-live-number{font-size:15px;line-height:1}.ps-asset .asset-preview b.asset-preview-storage-value{font-size:11px}.asset-preview-metric-bar{width:100%;height:7px;display:block;overflow:hidden;border-radius:999px;background:rgba(148,163,184,.22);box-shadow:inset 0 0 0 1px rgba(148,163,184,.14)}.asset-preview-metric-bar i{width:calc(var(--metric-from,.4) * 100%);height:100%;display:block;border-radius:inherit;background:linear-gradient(90deg,color-mix(in srgb,var(--metric-accent,#2563eb) 76%,white),var(--metric-accent,#2563eb));box-shadow:0 0 14px rgba(var(--metric-accent-rgb,37,99,235),.28)}.asset-preview-storage-card em,.asset-preview-metric-card em,.asset-preview-storage-segmented em{max-width:100%;overflow:hidden;color:rgba(var(--metric-accent-rgb,37,99,235),.94);font-size:9px;font-style:normal;font-weight:900;line-height:1.1;text-overflow:ellipsis;white-space:nowrap}.asset-preview-storage-header{width:100%;display:flex;align-items:baseline;justify-content:space-between;gap:6px}.asset-preview-storage-title{max-width:42%;overflow:hidden;color:#111827;font-size:10px;font-weight:900;line-height:1.1;text-overflow:ellipsis;white-space:nowrap}.asset-preview-storage-value{max-width:58%;overflow:hidden;color:#6b7280;font-size:11px;font-weight:900;line-height:1.1;text-align:right;text-overflow:ellipsis;white-space:nowrap}.asset-preview-storage-track{width:100%;height:16px;display:block;overflow:hidden;border-radius:999px;background:rgba(229,231,235,.92);box-shadow:inset 0 0 0 1px rgba(209,213,219,.72)}.asset-preview-storage-fill{width:calc(var(--metric-from,.4) * 100%);height:100%;display:flex;gap:2px;padding-right:2px}.asset-preview-storage-segment{width:calc(var(--segment-share,.2) * 100%);min-width:6px;height:100%;display:block;background:var(--segment-color,#ff3b30)}.asset-preview-storage-legend{width:100%;display:flex;flex-wrap:wrap;gap:4px 8px}.asset-preview-storage-legend-item{display:inline-flex;align-items:center;gap:4px;min-width:0;color:#111827}.asset-preview-storage-legend-item i{width:7px;height:7px;flex:0 0 auto;border-radius:999px}.asset-preview-storage-legend-item span{overflow:hidden;font-size:8px;font-weight:900;line-height:1;text-overflow:ellipsis;white-space:nowrap}.asset-motion-count .asset-preview-metric-bar i,.asset-motion-count .asset-preview-storage-fill{animation:psAssetMetricBar var(--asset-speed,1500ms) ease-in-out infinite}@keyframes psAssetMetricBar{0%,20%,100%{width:calc(var(--metric-from,.4) * 100%)}55%,80%{width:calc(var(--metric-to,.78) * 100%)}}`;
+}
+
+function renderAnimatedAssetValueMarkup(asset: ReturnType<typeof getVisualAsset>, className = 'asset-preview-live-number', durationMs?: number) {
+  const fromText = asset.value || '0';
+  const toText = asset.secondaryValue || asset.value || '0';
+  const duration = Math.round(clamp(durationMs || asset.previewSpeed || 1800, 400, 12000));
+  return `<b class="${className}" data-asset-count-from="${escapeHtml(fromText)}" data-asset-count-to="${escapeHtml(toText)}" data-asset-duration="${duration}">${escapeHtml(fromText)}</b>`;
+}
+
+function normalizeAssetSegments(segments?: Array<{ color: string; ratio: number; label?: string }>) {
+  const valid = (segments || []).filter((segment) => Number.isFinite(segment.ratio) && segment.ratio > 0);
+  const total = valid.reduce((sum, segment) => sum + segment.ratio, 0) || 1;
+  return valid.map((segment) => ({
+    ...segment,
+    ratio: segment.ratio / total,
+  }));
+}
+
+function buildAssetCountRuntimeBody() {
+  return `
+    window.psFormatAssetValue = window.psFormatAssetValue || function(fromText, toText, progress){
+      var source = String(fromText || "");
+      var target = String(toText || source);
+      var sourceMatch = source.match(/-?\\d+(?:\\.\\d+)?/);
+      var targetMatch = target.match(/-?\\d+(?:\\.\\d+)?/);
+      if (!sourceMatch || !targetMatch) return target || source || "0";
+      var sourceIndex = sourceMatch.index || 0;
+      var targetIndex = targetMatch.index || 0;
+      var fromNumber = parseFloat(sourceMatch[0]);
+      var toNumber = parseFloat(targetMatch[0]);
+      if (!isFinite(fromNumber) || !isFinite(toNumber)) return target || source || "0";
+      var sourcePrefix = source.slice(0, sourceIndex);
+      var targetPrefix = target.slice(0, targetIndex);
+      var sourceSuffix = source.slice(sourceIndex + sourceMatch[0].length);
+      var targetSuffix = target.slice(targetIndex + targetMatch[0].length);
+      var sourceDecimals = (sourceMatch[0].split(".")[1] || "").length;
+      var targetDecimals = (targetMatch[0].split(".")[1] || "").length;
+      var decimals = Math.max(sourceDecimals, targetDecimals);
+      var value = fromNumber + (toNumber - fromNumber) * Math.max(0, Math.min(1, progress));
+      var formatted = decimals > 0 ? value.toFixed(decimals) : String(Math.round(value));
+      return (String(targetPrefix || sourcePrefix || "") + formatted + String(targetSuffix || sourceSuffix || "")).replace(/\\s{2,}/g, " ").trim();
+    };
+    window.psAnimateAssetNumbers = window.psAnimateAssetNumbers || function(root){
+      var scope = root && root.querySelectorAll ? root : document;
+      var nodes = scope.querySelectorAll ? scope.querySelectorAll("[data-asset-count-from]") : [];
+      if (!nodes.length || !window.requestAnimationFrame) return;
+      var start = 0;
+      function frame(now){
+        if (!start) start = now;
+        for (var i = 0; i < nodes.length; i++) {
+          var node = nodes[i];
+          var duration = Math.max(400, parseFloat(node.getAttribute("data-asset-duration") || "1800") || 1800);
+          var elapsed = (now - start) / duration;
+          var cycle = elapsed % 2;
+          var progress = cycle <= 1 ? cycle : 2 - cycle;
+          node.textContent = window.psFormatAssetValue(node.getAttribute("data-asset-count-from"), node.getAttribute("data-asset-count-to"), progress);
+        }
+        window.requestAnimationFrame(frame);
+      }
+      window.requestAnimationFrame(frame);
+    };
+  `;
 }
 
 export function safeFileName(value: string) {

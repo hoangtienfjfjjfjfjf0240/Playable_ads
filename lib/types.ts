@@ -11,7 +11,7 @@ export type ImageFit = 'cover' | 'contain';
 export type AiProvider = 'openai' | 'gemini-flash' | 'gemini-pro';
 export type StorePlatform = 'app-store' | 'google-play' | 'custom';
 export type StoreRoutingMode = 'single' | 'platform-auto';
-export type ContentLocale = 'auto' | 'en' | 'vi' | 'es' | 'fr' | 'de' | 'pt-br' | 'id' | 'th';
+export type ContentLocale = string;
 
 export type HandMotion =
   | 'tap'
@@ -34,9 +34,11 @@ export type LayerTarget = 'image' | 'hand' | 'scan' | 'asset' | 'cta' | 'text';
 
 export type AnimationLoopMode = 'once' | 'loop' | 'pingpong';
 
-export type VisualAssetCategory = 'heart' | 'scan' | 'counter';
+export type VisualAssetCategory = 'heart' | 'scan' | 'counter' | 'storage';
 
 export type VisualAssetMotion = 'pulse' | 'sweep' | 'count' | 'blink' | 'wave';
+
+export type VisualAssetDisplayStyle = 'metric' | 'segmented' | 'notification';
 
 export type PlayableIntent =
   | 'tap_product'
@@ -117,7 +119,22 @@ export interface VisualAsset {
   note: string;
   category: VisualAssetCategory;
   motion: VisualAssetMotion;
+  displayStyle?: VisualAssetDisplayStyle;
   value?: string;
+  title?: string;
+  secondaryValue?: string;
+  deltaLabel?: string;
+  fromRatio?: number;
+  toRatio?: number;
+  accentColor?: string;
+  segments?: Array<{
+    color: string;
+    ratio: number;
+    label?: string;
+  }>;
+  scanStyle?: ScanStyle;
+  previewColor?: string;
+  previewSpeed?: number;
 }
 
 export interface ButtonAsset {
@@ -128,6 +145,7 @@ export interface ButtonAsset {
   colorTo: string;
   textColor: string;
   shadowColor: string;
+  animation?: ButtonAnimation;
 }
 
 export interface LayerSettings {

@@ -33,6 +33,7 @@ import {
   Minimize2,
   MousePointerClick,
   Play,
+  Redo2,
   RefreshCw,
   Save,
   ScanLine,
@@ -41,6 +42,7 @@ import {
   Trash2,
   Upload,
   Unlink2,
+  Undo2,
   Unlock,
   WandSparkles,
   X,
@@ -67,7 +69,12 @@ import {
 } from '../lib/export-engine';
 import { buildVariantPreviewGif, getVariantPreviewGifName } from '../lib/gif-preview';
 import { buttonAssets, getButtonAsset } from '../lib/button-assets';
-import { applyContentLocaleToPrompt, contentLocaleOptions } from '../lib/content-locales';
+import {
+  applyContentLocaleToPrompt,
+  hasStaticLocaleCopy,
+  localizeDefaultCtaText,
+  localizeDefaultCueText,
+} from '../lib/content-locales';
 import { getHandAnchorOffset, getHandAsset, handAssets } from '../lib/hand-assets';
 import { detectImageHotspot, getImageDimensions, loadAssetAsDataUrl, readFileAsDataUrl, readFileAsText } from '../lib/image-utils';
 import {
@@ -85,11 +92,13 @@ import { withStudioRoutePrefix } from '../lib/studio-routes';
 import { getVisualAsset, visualAssets } from '../lib/visual-assets';
 import type {
   AiVariantResponseItem,
+  ContentLocale,
   ExportImageInput,
   Hotspot,
   LayerSettings,
   LayerTarget,
   NetworkTarget,
+  PlayableIntent,
   PlayableVariant,
   ProjectSettings,
   ReferenceImageInput,
@@ -99,7 +108,9 @@ import type {
   StudioEditorContextPayload,
   StudioProjectDetail,
   StudioCloneImportPayload,
+  VisualAsset,
 } from '../lib/types';
+import { ContentLocalePicker } from './ContentLocalePicker';
 
 type HealthState = {
   aiConfigured: boolean;
@@ -114,7 +125,7 @@ type HealthState = {
 
 type Notice = { tone: 'ok' | 'warn' | 'error' | 'busy'; text: string } | null;
 type AiWorkerStatus = 'idle' | 'running' | 'done' | 'error';
-type AssetLibraryTab = 'hand' | 'scan' | 'button';
+type AssetLibraryTab = 'hand' | 'scan' | 'button' | 'asset';
 type FrameMetrics = { width: number; height: number };
 type GenerationHistoryEntry = {
   id: string;
@@ -124,6 +135,18 @@ type GenerationHistoryEntry = {
   model: string;
   durationSeconds: number | null;
   variants: PlayableVariant[];
+};
+
+type EditorHistorySnapshot = {
+  settings: ProjectSettings;
+  sources: SourceItem[];
+  referenceImages: ReferenceImageInput[];
+  activeSourceId: string;
+  variants: PlayableVariant[];
+  selectedVariantId: string;
+  htmlLayerSettings: LayerSettings;
+  selectedLayer: LayerTarget;
+  assetLibraryTab: AssetLibraryTab;
 };
 
 type PlayableStudioProps = {
@@ -326,7 +349,7 @@ const toolbarLayerMeta: Record<LayerTarget, string> = {
   cta: 'CTA',
   text: 'TEXT',
 };
-const layerPickerTargets: LayerTarget[] = ['image', 'hand', 'scan', 'cta', 'text'];
+const layerPickerTargets: LayerTarget[] = ['image', 'hand', 'scan', 'asset', 'cta', 'text'];
 const storeTargetMeta: Record<
   ProjectSettings['storePlatform'],
   {
@@ -374,6 +397,7 @@ const scanColorSwatches = ['#7c3cff', '#2563eb', '#22d3ee', '#10b981', '#f59e0b'
 const APPLOVIN_MAX_HTML_BYTES = 5 * 1024 * 1024;
 const ANALYZE_CONCURRENCY = 4;
 const MAX_REFERENCE_IMAGES = 6;
+const MAX_EDITOR_HISTORY = 50;
 
 function setLayerDragData(event: DragEvent<HTMLElement>, layer: LayerTarget, assetId?: string, scanStyle?: ScanStyle) {
   event.dataTransfer.setData(LAYER_DRAG_TYPE, layer);
@@ -443,6 +467,16 @@ function getPointInElement(element: HTMLElement, clientX: number, clientY: numbe
     x: Math.round(clamp(((clientX - rect.left) / rect.width) * 100, 0, 100)),
     y: Math.round(clamp(((clientY - rect.top) / rect.height) * 100, 0, 100)),
   };
+}
+
+function serializeEditorHistorySnapshot(snapshot: EditorHistorySnapshot) {
+  return JSON.stringify(snapshot);
+}
+
+function isTypingTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false;
+  const tagName = target.tagName.toLowerCase();
+  return target.isContentEditable || tagName === 'input' || tagName === 'textarea' || tagName === 'select';
 }
 
 function scopeLayerPatch(partial: Partial<LayerSettings>, layer: LayerTarget) {
@@ -658,6 +692,14 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
   const lastFailedSnapshotRef = useRef('');
   const draftBaselineSnapshotRef = useRef('');
   const pendingPersistRef = useRef(false);
+  const localeSyncRef = useRef<ProjectSettings['locale']>('auto');
+  const localeTranslationSequenceRef = useRef(0);
+  const editorHistoryPastRef = useRef<EditorHistorySnapshot[]>([]);
+  const editorHistoryFutureRef = useRef<EditorHistorySnapshot[]>([]);
+  const editorHistorySerializedRef = useRef('');
+  const editorHistoryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const editorHistoryRestoreRef = useRef(false);
+  const editorHistoryRebaseRef = useRef(false);
   const supabase = useMemo(() => getSupabaseBrowser(), []);
   const router = useRouter();
   const pathname = usePathname();
@@ -691,6 +733,8 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
   const [generationHistory, setGenerationHistory] = useState<GenerationHistoryEntry[]>([]);
   const [assetLibraryTab, setAssetLibraryTab] = useState<AssetLibraryTab>('hand');
   const [selectedPreviewMetrics, setSelectedPreviewMetrics] = useState<FrameMetrics | null>(null);
+  const [undoDepth, setUndoDepth] = useState(0);
+  const [redoDepth, setRedoDepth] = useState(0);
 
   useEffect(() => {
     setSettings((current) => (current.imageFit === 'cover' ? current : { ...current, imageFit: 'cover' }));
@@ -723,12 +767,27 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
       : activeAiReady
         ? ''
         : 'Thiếu khóa AI ở server (AI_API_KEY hoặc OPENAI_API_KEY). Hãy khởi động lại local sau khi cập nhật .env.local.';
-  const visibleVisualAssets = useMemo(
+  const visibleScanAssets = useMemo(
     () =>
-      assetLibraryTab === 'hand' || assetLibraryTab === 'button'
-        ? []
-        : visualAssets.filter((asset) => asset.category === 'scan'),
-    [assetLibraryTab],
+      [...visualAssets.filter((asset) => asset.category === 'scan')].sort((left, right) => {
+        const leftPriority = left.scanStyle ? 0 : 1;
+        const rightPriority = right.scanStyle ? 0 : 1;
+        if (leftPriority !== rightPriority) return leftPriority - rightPriority;
+        return left.label.localeCompare(right.label);
+      }),
+    [],
+  );
+  const visibleFxAssets = useMemo(
+    () =>
+      [...visualAssets.filter((asset) => asset.category === 'storage' || asset.category === 'counter')].sort((left, right) => {
+        if (left.category !== right.category) return left.category === 'storage' ? -1 : 1;
+        if (left.category === 'storage' && left.displayStyle !== right.displayStyle) {
+          if (left.displayStyle === 'segmented') return -1;
+          if (right.displayStyle === 'segmented') return 1;
+        }
+        return left.label.localeCompare(right.label);
+      }),
+    [],
   );
   const activeSourceLabel = activeSource ? (activeSource.kind === 'image' ? 'Ảnh nguồn' : 'HTML playable') : 'Chưa có nguồn';
   const toolbarLayerLabel = toolbarLayerMeta[selectedLayer];
@@ -741,12 +800,257 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
     { command: 'bottom', title: 'Align bottom', Icon: AlignVerticalJustifyEnd },
   ] as const;
   const assetLibraryCount =
-    assetLibraryTab === 'hand' ? handAssets.length : assetLibraryTab === 'button' ? buttonAssets.length : visibleVisualAssets.length;
+    assetLibraryTab === 'hand'
+      ? handAssets.length
+      : assetLibraryTab === 'button'
+        ? buttonAssets.length
+        : assetLibraryTab === 'asset'
+          ? visibleFxAssets.length
+          : visibleScanAssets.length;
   const appScopedEditor = Boolean(appId);
   const requestedProjectId = searchParams?.get('projectId') || '';
   const requestedProjectName = searchParams?.get('name') || '';
   const wantsFreshProject = searchParams?.get('new') === '1';
   const localizedPrompt = useMemo(() => applyContentLocaleToPrompt(settings.prompt, settings.locale), [settings.locale, settings.prompt]);
+  const syncEditorHistoryDepth = useCallback(() => {
+    setUndoDepth(Math.max(0, editorHistoryPastRef.current.length - 1));
+    setRedoDepth(editorHistoryFutureRef.current.length);
+  }, []);
+  const editorHistorySnapshot = useMemo<EditorHistorySnapshot>(
+    () => ({
+      settings: normalizeProjectSettings(settings),
+      sources: sources.map((source) => ({
+        ...source,
+        hotspot: source.hotspot ? { ...source.hotspot } : undefined,
+      })),
+      referenceImages: referenceImages.map((reference) => ({ ...reference })),
+      activeSourceId,
+      variants: variants.map((variant) => ({
+        ...variant,
+        hotspot: variant.hotspot ? { ...variant.hotspot } : { x: 50, y: 72, confidence: 0.28 },
+        settings: normalizeLayerSettings(variant.settings),
+        plan: variant.plan
+          ? {
+              ...variant.plan,
+              target: { ...variant.plan.target },
+              cta: { ...variant.plan.cta },
+              cue: { ...variant.plan.cue },
+              timing: { ...variant.plan.timing },
+            }
+          : variant.plan,
+      })),
+      selectedVariantId,
+      htmlLayerSettings: normalizeLayerSettings(htmlLayerSettings),
+      selectedLayer,
+      assetLibraryTab,
+    }),
+    [activeSourceId, assetLibraryTab, htmlLayerSettings, referenceImages, selectedLayer, selectedVariantId, settings, sources, variants],
+  );
+  const editorHistorySnapshotSerialized = useMemo(
+    () => serializeEditorHistorySnapshot(editorHistorySnapshot),
+    [editorHistorySnapshot],
+  );
+
+  const rebaseEditorHistory = useCallback(() => {
+    editorHistoryRebaseRef.current = true;
+  }, []);
+
+  const commitEditorHistorySnapshot = useCallback(
+    (clearFutureOnChange = true) => {
+      if (editorHistoryRestoreRef.current) return false;
+      if (editorHistoryTimerRef.current) {
+        clearTimeout(editorHistoryTimerRef.current);
+        editorHistoryTimerRef.current = null;
+      }
+
+      if (!editorHistoryPastRef.current.length || editorHistoryRebaseRef.current) {
+        editorHistoryPastRef.current = [editorHistorySnapshot];
+        editorHistoryFutureRef.current = [];
+        editorHistorySerializedRef.current = editorHistorySnapshotSerialized;
+        editorHistoryRebaseRef.current = false;
+        syncEditorHistoryDepth();
+        return true;
+      }
+
+      if (editorHistorySnapshotSerialized === editorHistorySerializedRef.current) return false;
+
+      editorHistoryPastRef.current = [...editorHistoryPastRef.current, editorHistorySnapshot].slice(-MAX_EDITOR_HISTORY);
+      if (clearFutureOnChange) {
+        editorHistoryFutureRef.current = [];
+      }
+      editorHistorySerializedRef.current = editorHistorySnapshotSerialized;
+      syncEditorHistoryDepth();
+      return true;
+    },
+    [editorHistorySnapshot, editorHistorySnapshotSerialized, syncEditorHistoryDepth],
+  );
+
+  const applyEditorHistorySnapshot = useCallback(
+    (snapshot: EditorHistorySnapshot, mode: 'undo' | 'redo') => {
+      editorHistoryRestoreRef.current = true;
+      editorHistorySerializedRef.current = serializeEditorHistorySnapshot(snapshot);
+      setSettings(normalizeProjectSettings(snapshot.settings));
+      setSources(
+        snapshot.sources.map((source) => ({
+          ...source,
+          hotspot: source.hotspot ? { ...source.hotspot } : undefined,
+        })),
+      );
+      setReferenceImages(snapshot.referenceImages.map((reference) => ({ ...reference })));
+      setActiveSourceId(snapshot.activeSourceId);
+      setVariants(
+        snapshot.variants.map((variant, index) => ({
+          ...variant,
+          index: Number(variant.index) || index + 1,
+          hotspot: variant.hotspot ? { ...variant.hotspot } : { x: 50, y: 72, confidence: 0.28 },
+          settings: normalizeLayerSettings(variant.settings),
+          plan: variant.plan
+            ? {
+                ...variant.plan,
+                target: { ...variant.plan.target },
+                cta: { ...variant.plan.cta },
+                cue: { ...variant.plan.cue },
+                timing: { ...variant.plan.timing },
+              }
+            : variant.plan,
+        })),
+      );
+      setSelectedVariantId(snapshot.selectedVariantId);
+      setHtmlLayerSettings(normalizeLayerSettings(snapshot.htmlLayerSettings));
+      setSelectedLayer(snapshot.selectedLayer);
+      setAssetLibraryTab(snapshot.assetLibraryTab);
+      setSelectedPreviewMetrics(null);
+      setAiWorkers(
+        createWorkerStatuses(
+          normalizeVariantCount(snapshot.settings.variantCount || DEFAULT_VARIANT_COUNT),
+          snapshot.variants.length ? 'done' : 'idle',
+        ),
+      );
+      setLastAiDuration(null);
+      setNotice({ tone: 'ok', text: mode === 'undo' ? 'Đã quay lại 1 bước.' : 'Đã đi tiếp 1 bước.' });
+      pendingPersistRef.current = true;
+      window.setTimeout(() => {
+        editorHistoryRestoreRef.current = false;
+      }, 0);
+    },
+    [],
+  );
+
+  const undoEditorStep = useCallback(() => {
+    if (busy || projectSaving) return;
+    commitEditorHistorySnapshot();
+    if (editorHistoryPastRef.current.length <= 1) return;
+    const current = editorHistoryPastRef.current.pop();
+    if (current) {
+      editorHistoryFutureRef.current.unshift(current);
+    }
+    const previous = editorHistoryPastRef.current[editorHistoryPastRef.current.length - 1];
+    if (!previous) return;
+    syncEditorHistoryDepth();
+    applyEditorHistorySnapshot(previous, 'undo');
+  }, [applyEditorHistorySnapshot, busy, commitEditorHistorySnapshot, projectSaving, syncEditorHistoryDepth]);
+
+  const redoEditorStep = useCallback(() => {
+    if (busy || projectSaving) return;
+    commitEditorHistorySnapshot();
+    const next = editorHistoryFutureRef.current.shift();
+    if (!next) return;
+    editorHistoryPastRef.current.push(next);
+    syncEditorHistoryDepth();
+    applyEditorHistorySnapshot(next, 'redo');
+  }, [applyEditorHistorySnapshot, busy, commitEditorHistorySnapshot, projectSaving, syncEditorHistoryDepth]);
+
+  useEffect(() => {
+    if (editorHistoryTimerRef.current) {
+      clearTimeout(editorHistoryTimerRef.current);
+      editorHistoryTimerRef.current = null;
+    }
+
+    if (editorHistoryRestoreRef.current) return;
+
+    if (!editorHistoryPastRef.current.length || editorHistoryRebaseRef.current) {
+      commitEditorHistorySnapshot();
+      return;
+    }
+
+    if (editorHistorySnapshotSerialized === editorHistorySerializedRef.current) return;
+
+    editorHistoryTimerRef.current = setTimeout(() => {
+      if (editorHistoryRestoreRef.current) return;
+      commitEditorHistorySnapshot();
+    }, 220);
+
+    return () => {
+      if (editorHistoryTimerRef.current) {
+        clearTimeout(editorHistoryTimerRef.current);
+        editorHistoryTimerRef.current = null;
+      }
+    };
+  }, [commitEditorHistorySnapshot, editorHistorySnapshotSerialized]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || isTypingTarget(event.target)) return;
+      const key = event.key.toLowerCase();
+      const wantsUndo = key === 'z' && !event.shiftKey;
+      const wantsRedo = (key === 'z' && event.shiftKey) || key === 'y';
+      if (!wantsUndo && !wantsRedo) return;
+      event.preventDefault();
+      if (wantsUndo) {
+        undoEditorStep();
+        return;
+      }
+      redoEditorStep();
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [redoEditorStep, undoEditorStep]);
+
+  useEffect(() => {
+    const previousLocale = localeSyncRef.current;
+    localeSyncRef.current = settings.locale;
+    const requestSequence = localeTranslationSequenceRef.current + 1;
+    localeTranslationSequenceRef.current = requestSequence;
+    if (previousLocale === settings.locale || settings.locale === 'auto') return;
+
+    if (hasStaticLocaleCopy(settings.locale)) {
+      setVariants((current) =>
+        current.map((variant) => relocalizeVariantCopy(variant, settings.locale, settings.prompt)),
+      );
+
+      if (activeSource?.kind === 'html') {
+        setHtmlLayerSettings((current) => relocalizeLayerCopy(normalizeLayerSettings(current), settings.locale, settings.prompt));
+      }
+      return;
+    }
+
+    const translationEntries = buildOverlayLocalizationEntries(
+      variants,
+      activeSource?.kind === 'html' ? normalizeLayerSettings(htmlLayerSettings) : null,
+      settings.prompt,
+    );
+    if (!translationEntries.length) return;
+
+    void translateOverlayCopyEntries(settings.locale, translationEntries)
+      .then((translations) => {
+        if (localeTranslationSequenceRef.current !== requestSequence || settings.locale === 'auto') return;
+
+        setVariants((current) =>
+          current.map((variant) => applyTranslatedVariantCopy(variant, translations, settings.prompt)),
+        );
+
+        if (activeSource?.kind === 'html') {
+          setHtmlLayerSettings((current) =>
+            applyTranslatedLayerCopy(normalizeLayerSettings(current), translations, settings.prompt),
+          );
+        }
+      })
+      .catch((error) => {
+        console.error('overlay copy localization failed', error);
+      });
+  }, [activeSource?.kind, htmlLayerSettings, settings.locale, settings.prompt, variants]);
+
   const autosaveSnapshot = useMemo(() => {
     if (!appScopedEditor || !appId) return '';
     return buildProjectAutosaveSnapshot(buildProjectSavePayload({
@@ -884,6 +1188,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
       );
       setSelectedVariantId(payload.variants[0]?.id || '');
       markProjectForPersist();
+      rebaseEditorHistory();
       setSelectedLayer('hand');
       setHtmlLayerSettings(normalizeLayerSettings(defaultLayerSettings));
       lastSavedSnapshotRef.current = '';
@@ -895,7 +1200,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
     } catch (error) {
       setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Cannot import clone payload.' });
     }
-  }, [appId, appScopedEditor, currentProjectId, markProjectForPersist, sources.length, variants.length]);
+  }, [appId, appScopedEditor, currentProjectId, markProjectForPersist, rebaseEditorHistory, sources.length, variants.length]);
 
   useEffect(() => {
     if (busy) return;
@@ -1112,8 +1417,9 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
     setVariants([]);
     setSelectedVariantId('');
     setSelectedLayer('hand');
+    rebaseEditorHistory();
     setNotice({ tone: 'ok', text: 'Đã mở một project mới trong editor hiện tại.' });
-  }, [appId, studioApp?.name]);
+  }, [appId, rebaseEditorHistory, studioApp?.name]);
 
   useEffect(() => {
     if (!appScopedEditor || !wantsFreshProject || freshProjectHandledRef.current) return;
@@ -1207,6 +1513,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
           })),
         );
         setSelectedVariantId(project.variants[0]?.id || '');
+        rebaseEditorHistory();
         lastSavedSnapshotRef.current = buildProjectAutosaveSnapshot(buildProjectSavePayload({
           id: project.id,
           appId: project.appId,
@@ -1235,7 +1542,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         setBusy(false);
       }
     },
-    [authToken],
+    [authToken, rebaseEditorHistory],
   );
 
   useEffect(() => {
@@ -2039,14 +2346,15 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
 
   const applyVisualAsset = (assetId: string) => {
     const asset = getVisualAsset(assetId);
-    const scanLibraryPreset = getScanLibraryPreset(asset.id);
+    const scanLibraryPreset = getScanLibraryPreset(asset);
     if (scanLibraryPreset) {
       setSelectedLayer('scan');
       updateLayer(
         {
           scanStyle: scanLibraryPreset.scanStyle,
           scanAnimationName: getScanAnimationLabel(scanLibraryPreset.scanStyle),
-          scanColor: layerForControls.scanColor || '#7c3cff',
+          scanColor: scanLibraryPreset.color,
+          scanSpeed: scanLibraryPreset.speed,
           injectScan: true,
           layerOrder: ensureLayerInOrder(getLayerOrder(activeLayer), 'scan'),
         },
@@ -2080,6 +2388,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         ctaColorTo: asset.colorTo,
         ctaTextColor: asset.textColor,
         ctaShadowColor: asset.shadowColor,
+        buttonAnimation: asset.animation || layerForControls.buttonAnimation,
         showCta: true,
         layerOrder: ensureLayerInOrder(getLayerOrder(activeLayer), 'cta'),
       }),
@@ -2161,11 +2470,18 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         );
       }
       if (layer === 'scan') {
+        const scanLibraryPreset = assetId ? getScanLibraryPreset(assetId) : null;
         const scanPatch: Partial<LayerSettings> = {
           scanX: x,
           scanY: y,
           injectScan: true,
           layerOrder: ensureLayerInOrder(getLayerOrder(currentLayer), 'scan'),
+          ...(scanLibraryPreset
+            ? {
+                scanColor: scanLibraryPreset.color,
+                scanSpeed: scanLibraryPreset.speed,
+              }
+            : {}),
           ...(scanStyle
             ? {
                 scanStyle,
@@ -2187,8 +2503,24 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         );
       }
       if (layer === 'cta') {
+        const buttonAsset = assetId ? getButtonAsset(assetId) : null;
         updateLayer(
-          buildCtaCompanionPatch(currentLayer, { ctaX: x, ctaY: y, showCta: true, layerOrder: ensureLayerInOrder(getLayerOrder(currentLayer), 'cta') }),
+          buildCtaCompanionPatch(currentLayer, {
+            ctaX: x,
+            ctaY: y,
+            showCta: true,
+            layerOrder: ensureLayerInOrder(getLayerOrder(currentLayer), 'cta'),
+            ...(buttonAsset
+              ? {
+                  ctaButtonId: buttonAsset.id,
+                  ctaColorFrom: buttonAsset.colorFrom,
+                  ctaColorTo: buttonAsset.colorTo,
+                  ctaTextColor: buttonAsset.textColor,
+                  ctaShadowColor: buttonAsset.shadowColor,
+                  buttonAnimation: buttonAsset.animation || currentLayer.buttonAnimation,
+                }
+              : {}),
+          }),
           variantId,
           'cta',
         );
@@ -2246,6 +2578,22 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
     if (layer === 'asset') updateLayer({ injectAsset: visible, layerOrder: nextOrder }, undefined, 'asset');
     if (layer === 'cta') updateLayer({ showCta: visible, layerOrder: nextOrder }, undefined, 'cta');
     if (layer === 'text') updateLayer({ showCue: visible, layerOrder: nextOrder }, undefined, 'text');
+  };
+
+  const handleLayerPickerClick = (layer: LayerTarget) => {
+    setSelectedLayer(layer);
+    if (layer === 'image') return;
+
+    if (!selectedVariant && activeSource?.kind !== 'html') {
+      setNotice({ tone: 'warn', text: 'Tạo biến thể hoặc nhập HTML trước khi thêm layer.' });
+      return;
+    }
+
+    if (!isLayerVisible(layerForControls, layer)) {
+      setLayerVisibility(layer, true);
+      const label = layerMeta[layer].label;
+      setNotice({ tone: 'ok', text: `Đã thêm layer ${label}.` });
+    }
   };
 
   const moveLayerOrder = (layer: LayerTarget, direction: 'up' | 'down') => {
@@ -2396,14 +2744,6 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
               <button type="button" className="secondary-button" onClick={() => void leaveEditor(homeHref)}>
                 <ArrowLeft size={15} />
                 Home
-              </button>
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={() => void leaveEditor(routeFor(`/apps/${appId}/clone`))}
-              >
-                <FileCode2 size={15} />
-                Clone playable
               </button>
             </div>
 
@@ -2556,7 +2896,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
             <b>{assetLibraryCount}</b>
           </div>
           <div className="asset-tabs" role="tablist" aria-label="Thư viện asset">
-            {(['hand', 'button', 'scan'] as AssetLibraryTab[]).map((tab) => (
+            {(['hand', 'button', 'scan', 'asset'] as AssetLibraryTab[]).map((tab) => (
               <button
                 key={tab}
                 type="button"
@@ -2567,36 +2907,42 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                   <Hand size={14} />
                 ) : tab === 'button' ? (
                   <MousePointerClick size={14} />
+                ) : tab === 'asset' ? (
+                  <Activity size={14} />
                 ) : (
                   <ScanLine size={14} />
                 )}
-                <span>{tab}</span>
+                <span>{tab === 'asset' ? 'FX' : tab}</span>
               </button>
             ))}
           </div>
 
           {assetLibraryTab === 'hand' ? (
             <div className="hand-grid asset-library-grid">
-              {handAssets.map((asset) => (
-                <button
-                  key={asset.id}
-                  type="button"
-                  draggable
-                  className={`hand-tile ${layerForControls.handId === asset.id ? 'active' : ''}`}
-                  onDragStart={(event) => {
-                    setLayerDragData(event, 'hand');
-                    setSelectedLayer('hand');
-                    updateLayer({ handId: asset.id, handMotion: asset.motion, injectHand: true }, undefined, 'hand');
-                  }}
-                  onClick={() => {
-                    setSelectedLayer('hand');
-                    updateLayer({ handId: asset.id, handMotion: asset.motion, injectHand: true }, undefined, 'hand');
-                  }}
-                  title={asset.label}
-                >
-                  <img src={asset.src} alt="" />
-                </button>
-              ))}
+              {handAssets.map((asset) => {
+                const motionLabel = handMotionPresets.find((preset) => preset.id === asset.motion)?.label || asset.motion;
+                return (
+                  <button
+                    key={asset.id}
+                    type="button"
+                    draggable
+                    className={`hand-tile ${layerForControls.handId === asset.id ? 'active' : ''}`}
+                    onDragStart={(event) => {
+                      setLayerDragData(event, 'hand');
+                      setSelectedLayer('hand');
+                      updateLayer({ handId: asset.id, handMotion: asset.motion, injectHand: true }, undefined, 'hand');
+                    }}
+                    onClick={() => {
+                      setSelectedLayer('hand');
+                      updateLayer({ handId: asset.id, handMotion: asset.motion, injectHand: true }, undefined, 'hand');
+                    }}
+                    title={`${asset.label} - ${motionLabel}`}
+                  >
+                    <img src={asset.src} alt="" />
+                    <span className="hand-tile-motion">{motionLabel}</span>
+                  </button>
+                );
+              })}
             </div>
           ) : assetLibraryTab === 'button' ? (
             <div className="button-asset-grid asset-library-grid">
@@ -2604,12 +2950,14 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                 <button
                   key={asset.id}
                   type="button"
+                  draggable
                   className={`button-asset-tile ${layerForControls.ctaButtonId === asset.id ? 'active' : ''}`}
+                  onDragStart={(event) => setLayerDragData(event, 'cta', asset.id)}
                   onClick={() => applyButtonAsset(asset.id)}
                   title={`${asset.label} - ${asset.note}`}
                 >
                   <span
-                    className="button-asset-preview"
+                    className={`button-asset-preview btn-${asset.animation || 'pulse'}`}
                     style={{
                       ['--cta-from' as string]: asset.colorFrom,
                       ['--cta-to' as string]: asset.colorTo,
@@ -2624,10 +2972,28 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                 </button>
               ))}
             </div>
+          ) : assetLibraryTab === 'asset' ? (
+            <div className="asset-grid asset-library-grid">
+              {visibleFxAssets.map((asset) => (
+                <button
+                  key={asset.id}
+                  type="button"
+                  draggable
+                  className={`asset-tile ${layerForControls.assetId === asset.id ? 'active' : ''}`}
+                  onDragStart={(event) => setLayerDragData(event, 'asset', asset.id)}
+                  onClick={() => applyVisualAsset(asset.id)}
+                  title={`${asset.label} - ${asset.note}`}
+                >
+                  <VisualAssetIcon assetId={asset.id} loopPreview />
+                  <strong>{asset.label}</strong>
+                  <small>{asset.note}</small>
+                </button>
+              ))}
+            </div>
           ) : (
             <div className="asset-grid asset-library-grid">
-              {visibleVisualAssets.map((asset) => {
-                const scanLibraryPreset = getScanLibraryPreset(asset.id);
+              {visibleScanAssets.map((asset) => {
+                const scanLibraryPreset = getScanLibraryPreset(asset);
                 const isActive = scanLibraryPreset
                   ? layerForControls.injectScan && layerForControls.scanStyle === scanLibraryPreset.scanStyle
                   : layerForControls.assetId === asset.id;
@@ -2640,7 +3006,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                     className={`asset-tile ${isActive ? 'active' : ''}`}
                     onDragStart={(event) => {
                       if (scanLibraryPreset) {
-                        setLayerDragData(event, 'scan', undefined, scanLibraryPreset.scanStyle);
+                        setLayerDragData(event, 'scan', asset.id, scanLibraryPreset.scanStyle);
                         return;
                       }
                       setLayerDragData(event, 'asset', asset.id);
@@ -2648,7 +3014,11 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                     onClick={() => applyVisualAsset(asset.id)}
                     title={`${asset.label} - ${asset.note}`}
                   >
-                    <VisualAssetIcon assetId={asset.id} loopPreview />
+                    {scanLibraryPreset ? (
+                      <ScanLibraryPreview asset={asset} preset={scanLibraryPreset} />
+                    ) : (
+                      <VisualAssetIcon assetId={asset.id} loopPreview />
+                    )}
                     <strong>{asset.label}</strong>
                     <small>{asset.note}</small>
                   </button>
@@ -2742,6 +3112,26 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                 <Crosshair size={16} />
                 Auto plan
               </button>
+              <button
+                className="ghost-button"
+                type="button"
+                onClick={undoEditorStep}
+                disabled={!undoDepth || busy || projectSaving}
+                title="Quay lại (Ctrl+Z)"
+              >
+                <Undo2 size={16} />
+                Undo
+              </button>
+              <button
+                className="ghost-button"
+                type="button"
+                onClick={redoEditorStep}
+                disabled={!redoDepth || busy || projectSaving}
+                title="Tiếp tục (Ctrl+Shift+Z / Ctrl+Y)"
+              >
+                <Redo2 size={16} />
+                Redo
+              </button>
               <button className="primary-button" type="button" onClick={generateVariants} disabled={!activeSource?.dataUrl || busy || !activeAiReady}>
                 {busy ? <Loader2 className="spin" size={16} /> : <WandSparkles size={16} />}
                 Create {targetVariantCount}
@@ -2792,7 +3182,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                 type="button"
                 draggable
                 onDragStart={(event) => setLayerDragData(event, 'image')}
-                onClick={() => setSelectedLayer('image')}
+                onClick={() => handleLayerPickerClick('image')}
               >
                 <ImagePlus size={15} />
                 Image
@@ -2802,7 +3192,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                 type="button"
                 draggable
                 onDragStart={(event) => setLayerDragData(event, 'hand')}
-                onClick={() => setSelectedLayer('hand')}
+                onClick={() => handleLayerPickerClick('hand')}
               >
                 <Hand size={15} />
                 Hand
@@ -2812,17 +3202,27 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                 type="button"
                 draggable
                 onDragStart={(event) => setLayerDragData(event, 'scan')}
-                onClick={() => setSelectedLayer('scan')}
+                onClick={() => handleLayerPickerClick('scan')}
               >
                 <ScanLine size={15} />
                 Scan
+              </button>
+              <button
+                className={selectedLayer === 'asset' ? 'active' : ''}
+                type="button"
+                draggable
+                onDragStart={(event) => setLayerDragData(event, 'asset')}
+                onClick={() => handleLayerPickerClick('asset')}
+              >
+                <Activity size={15} />
+                FX
               </button>
               <button
                 className={selectedLayer === 'cta' ? 'active' : ''}
                 type="button"
                 draggable
                 onDragStart={(event) => setLayerDragData(event, 'cta')}
-                onClick={() => setSelectedLayer('cta')}
+                onClick={() => handleLayerPickerClick('cta')}
               >
                 <MousePointerClick size={15} />
                 CTA
@@ -2832,7 +3232,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                 type="button"
                 draggable
                 onDragStart={(event) => setLayerDragData(event, 'text')}
-                onClick={() => setSelectedLayer('text')}
+                onClick={() => handleLayerPickerClick('text')}
               >
                 <Hash size={15} />
                 Text
@@ -2876,13 +3276,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
           </label>
           <label className="field">
             <span>Ngôn ngữ localize</span>
-            <select value={settings.locale} onChange={(event) => setProjectSetting('locale', event.target.value as ProjectSettings['locale'])}>
-              {contentLocaleOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
+            <ContentLocalePicker value={settings.locale} onChange={(value) => setProjectSetting('locale', value)} />
           </label>
           <input
             ref={brandAssetInputRef}
@@ -3101,7 +3495,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
                 type="button"
                 draggable
                 onDragStart={(event) => setLayerDragData(event, target)}
-                onClick={() => setSelectedLayer(target)}
+                onClick={() => handleLayerPickerClick(target)}
               >
                 {layerIcon(target)}
                 <span>{layerMeta[target].label}</span>
@@ -3282,7 +3676,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
               <NumberControl label="Y" value={layerForControls.assetY} min={0} max={100} onChange={(value) => updateLayer({ assetY: value })} />
               <NumberControl label="Size" value={layerForControls.assetSize} min={48} max={280} onChange={(value) => updateLayer({ assetSize: value })} />
               <NumberControl label="Rotate" value={layerForControls.assetRotation} min={-180} max={180} onChange={(value) => updateLayer(getLayerRotationPatch('asset', value))} />
-              <NumberControl label="Speed" value={layerForControls.assetSpeed} min={500} max={5000} step={100} onChange={(value) => updateLayer({ assetSpeed: value })} />
+              <NumberControl label="Thời lượng" value={layerForControls.assetSpeed} min={400} max={12000} step={100} onChange={(value) => updateLayer({ assetSpeed: value })} />
               <label className="check-row">
                 <input type="checkbox" checked={layerForControls.injectAsset} onChange={(event) => updateLayer({ injectAsset: event.target.checked })} />
                 <span>Hiện asset</span>
@@ -3650,7 +4044,7 @@ function PreviewCard({
           {layer.customAssetDataUrl ? (
             <img className="preview-asset-media" src={layer.customAssetDataUrl} alt={layer.customAssetName || 'Brand asset'} />
           ) : (
-            <VisualAssetIcon assetId={layer.assetId} />
+            <VisualAssetIcon assetId={layer.assetId} durationMs={layer.assetSpeed} />
           )}
         </span>
       );
@@ -3911,7 +4305,24 @@ function PreviewCard({
     if (target === 'scan' && shouldAnchorScanToFinger(layer)) {
       const rect = frameRef.current!.getBoundingClientRect();
       const offset = getScanOffsetFromFingerPoint(layer, rect, point.x, point.y);
-      onLayerPatch('scan', { scanOffsetX: offset.x, scanOffsetY: offset.y, injectScan: true });
+      const scanLibraryPreset = assetId ? getScanLibraryPreset(assetId) : null;
+      onLayerPatch('scan', {
+        scanOffsetX: offset.x,
+        scanOffsetY: offset.y,
+        injectScan: true,
+        ...(scanLibraryPreset
+          ? {
+              scanColor: scanLibraryPreset.color,
+              scanSpeed: scanLibraryPreset.speed,
+            }
+          : {}),
+        ...(scanStyle
+          ? {
+              scanStyle,
+              scanAnimationName: getScanAnimationLabel(scanStyle),
+            }
+          : {}),
+      });
       return;
     }
     onLayerDrop(target, point.x, point.y, assetId, scanStyle);
@@ -3931,7 +4342,7 @@ function PreviewCard({
             event.preventDefault();
             const assetId = getAssetDragData(event);
             const scanStyle = getScanStyleDragData(event);
-            const layerTarget = assetId ? 'asset' : getLayerDragData(event) || selectedLayer;
+            const layerTarget = getLayerDragData(event) || (assetId ? 'asset' : selectedLayer);
             placeLayer(layerTarget, event.clientX, event.clientY, assetId, scanStyle);
           }}
         >
@@ -4123,6 +4534,149 @@ function normalizeLayerSettings(settings: Partial<LayerSettings>): LayerSettings
   };
 }
 
+type OverlayLocalizationEntry = {
+  key: string;
+  text: string;
+};
+
+type OverlayLocalizationMap = Record<string, string>;
+
+function buildOverlayLocalizationEntries(variants: PlayableVariant[], htmlLayer: LayerSettings | null, prompt: string) {
+  const entries = new Map<string, OverlayLocalizationEntry>();
+  const direction = inferLocaleCueDirection(prompt);
+
+  const addIntentEntries = (intent: PlayableIntent) => {
+    const { ctaKey, cueKey } = getOverlayLocalizationKeys(intent, prompt);
+    const ctaText = localizeDefaultCtaText(intent, 'en');
+    const cueText = localizeDefaultCueText(intent, 'en', direction);
+    if (ctaText) entries.set(ctaKey, { key: ctaKey, text: ctaText });
+    if (cueText) entries.set(cueKey, { key: cueKey, text: cueText });
+  };
+
+  variants.forEach((variant) => {
+    const intent = variant.plan?.intent || inferPlayableIntentFromLayer(normalizeLayerSettings(variant.settings));
+    addIntentEntries(intent);
+  });
+
+  if (htmlLayer) {
+    addIntentEntries(inferPlayableIntentFromLayer(htmlLayer));
+  }
+
+  return Array.from(entries.values());
+}
+
+function getOverlayLocalizationKeys(intent: PlayableIntent, prompt: string) {
+  const direction = inferLocaleCueDirection(prompt);
+  return {
+    ctaKey: `cta:${intent}`,
+    cueKey: `cue:${intent}:${direction || 'base'}`,
+  };
+}
+
+async function translateOverlayCopyEntries(locale: ContentLocale, entries: OverlayLocalizationEntry[]): Promise<OverlayLocalizationMap> {
+  const response = await fetch('/api/ai/localize-overlay-copy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ locale, entries }),
+  });
+  const payload = (await response.json().catch(() => ({}))) as {
+    translations?: OverlayLocalizationMap;
+    error?: string;
+  };
+  if (!response.ok) {
+    throw new Error(payload.error || 'Overlay copy localization failed.');
+  }
+  return payload.translations || {};
+}
+
+function applyTranslatedVariantCopy(variant: PlayableVariant, translations: OverlayLocalizationMap, prompt: string): PlayableVariant {
+  const settings = normalizeLayerSettings(variant.settings);
+  const intent = variant.plan?.intent || inferPlayableIntentFromLayer(settings);
+  const { ctaKey, cueKey } = getOverlayLocalizationKeys(intent, prompt);
+  const ctaText = translations[ctaKey] || '';
+  const cueText = translations[cueKey] || '';
+
+  return {
+    ...variant,
+    settings: normalizeLayerSettings({
+      ...settings,
+      ...(ctaText ? { ctaText } : {}),
+      ...(cueText ? { cueText } : {}),
+    }),
+    plan: variant.plan
+      ? {
+          ...variant.plan,
+          cta: ctaText ? { ...variant.plan.cta, text: ctaText } : variant.plan.cta,
+          cue: cueText ? { ...variant.plan.cue, text: cueText } : variant.plan.cue,
+        }
+      : variant.plan,
+  };
+}
+
+function applyTranslatedLayerCopy(layer: LayerSettings, translations: OverlayLocalizationMap, prompt: string): LayerSettings {
+  const intent = inferPlayableIntentFromLayer(layer);
+  const { ctaKey, cueKey } = getOverlayLocalizationKeys(intent, prompt);
+  const ctaText = translations[ctaKey] || '';
+  const cueText = translations[cueKey] || '';
+  return normalizeLayerSettings({
+    ...layer,
+    ...(ctaText ? { ctaText } : {}),
+    ...(cueText ? { cueText } : {}),
+  });
+}
+
+function relocalizeVariantCopy(variant: PlayableVariant, locale: ContentLocale, prompt: string): PlayableVariant {
+  const settings = normalizeLayerSettings(variant.settings);
+  const intent = variant.plan?.intent || inferPlayableIntentFromLayer(settings);
+  const ctaText = localizeDefaultCtaText(intent, locale);
+  const cueText = localizeDefaultCueText(intent, locale, inferLocaleCueDirection(prompt));
+
+  return {
+    ...variant,
+    settings: normalizeLayerSettings({
+      ...settings,
+      ...(ctaText ? { ctaText } : {}),
+      ...(cueText ? { cueText } : {}),
+    }),
+    plan: variant.plan
+      ? {
+          ...variant.plan,
+          cta: ctaText ? { ...variant.plan.cta, text: ctaText } : variant.plan.cta,
+          cue: cueText ? { ...variant.plan.cue, text: cueText } : variant.plan.cue,
+        }
+      : variant.plan,
+  };
+}
+
+function relocalizeLayerCopy(layer: LayerSettings, locale: ContentLocale, prompt: string): LayerSettings {
+  const intent = inferPlayableIntentFromLayer(layer);
+  const ctaText = localizeDefaultCtaText(intent, locale);
+  const cueText = localizeDefaultCueText(intent, locale, inferLocaleCueDirection(prompt));
+  return normalizeLayerSettings({
+    ...layer,
+    ...(ctaText ? { ctaText } : {}),
+    ...(cueText ? { cueText } : {}),
+  });
+}
+
+function inferPlayableIntentFromLayer(layer: LayerSettings): PlayableIntent {
+  if (layer.injectScan && layer.scanStyle !== 'none') return 'scan_object';
+  if (layer.handMotion === 'drag') return 'drag_match';
+  if (layer.handMotion === 'press') return 'hold_charge';
+  if (layer.handMotion === 'swipeX' || layer.handMotion === 'swipeY') return 'swipe_reveal';
+  return 'cta_only';
+}
+
+function inferLocaleCueDirection(prompt: string): 'up' | 'down' | null {
+  const value = prompt
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+  if (/(swipe up|scroll up|vuot len|keo len|truot len)/.test(value)) return 'up';
+  if (/(swipe down|scroll down|vuot xuong|keo xuong|truot xuong)/.test(value)) return 'down';
+  return null;
+}
+
 function getScanAnimationLabel(scanStyle: ScanStyle) {
   const labels: Record<ScanStyle, string> = {
     ripple: 'Tap Ripple',
@@ -4138,15 +4692,15 @@ function getScanAnimationLabel(scanStyle: ScanStyle) {
   return labels[scanStyle];
 }
 
-function getScanLibraryPreset(assetId: string): { scanStyle: ScanStyle; label: string } | null {
-  const presetMap: Record<string, { scanStyle: ScanStyle; label: string }> = {
-    'scan-frame-box': { scanStyle: 'frame', label: 'Frame Scan' },
-    'scan-beam': { scanStyle: 'sweep', label: 'Sweep Line' },
-    'scan-vertical-beam': { scanStyle: 'border', label: 'Border Scan' },
-    'scan-reticle': { scanStyle: 'face', label: 'Face Scan' },
-    'scan-radar-sweep': { scanStyle: 'ring', label: 'Pulse Ring' },
+function getScanLibraryPreset(assetOrId: VisualAsset | string): { scanStyle: ScanStyle; label: string; color: string; speed: number } | null {
+  const asset = typeof assetOrId === 'string' ? getVisualAsset(assetOrId) : assetOrId;
+  if (asset.category !== 'scan' || !asset.scanStyle) return null;
+  return {
+    scanStyle: asset.scanStyle,
+    label: getScanAnimationLabel(asset.scanStyle),
+    color: normalizeHexColor(asset.previewColor, '#7c3cff'),
+    speed: Math.round(clamp(asset.previewSpeed || 1200, 500, 2600)),
   };
-  return presetMap[assetId] || null;
 }
 
 function normalizeHexColor(value?: string, fallback = '#7c3cff') {
@@ -4397,10 +4951,20 @@ function layerIcon(target: LayerTarget) {
   return <MousePointerClick size={15} />;
 }
 
-function VisualAssetIcon({ assetId, loopPreview = false }: { assetId: string; loopPreview?: boolean }) {
+function VisualAssetIcon({ assetId, loopPreview = false, durationMs }: { assetId: string; loopPreview?: boolean; durationMs?: number }) {
   const asset = getVisualAsset(assetId);
   const className = `asset-preview asset-preview-${asset.id}${loopPreview ? ` asset-motion-${asset.motion}` : ''}`;
+  if (asset.category === 'storage') {
+    if (asset.displayStyle === 'segmented') {
+      return <SegmentedStoragePreview asset={asset} className={`${className} asset-preview-storage-segmented`} durationMs={durationMs} />;
+    }
+    return <MetricAssetPreview asset={asset} className={`${className} asset-preview-storage-card`} durationMs={durationMs} />;
+  }
+
   if (asset.category === 'counter') {
+    if (asset.secondaryValue) {
+      return <MetricAssetPreview asset={asset} className={`${className} asset-preview-metric-card`} durationMs={durationMs} />;
+    }
     return (
       <span className={className}>
         <b>{asset.value || '86'}</b>
@@ -4444,6 +5008,183 @@ function VisualAssetIcon({ assetId, loopPreview = false }: { assetId: string; lo
     <span className={className}>
       <HeartPulse size={28} />
       <b>{asset.value || ''}</b>
+    </span>
+  );
+}
+
+function MetricAssetPreview({ asset, className, durationMs }: { asset: VisualAsset; className: string; durationMs?: number }) {
+  const accent = normalizeHexColor(asset.accentColor, asset.category === 'storage' ? '#ef4444' : '#2563eb');
+  const progress = useLoopingPreviewProgress(durationMs || asset.previewSpeed || 1800);
+  const liveValue = formatAnimatedAssetValue(asset.value || '0', asset.secondaryValue || asset.value || '0', progress);
+  return (
+    <span
+      className={className}
+      style={{
+        ['--metric-accent' as string]: accent,
+        ['--metric-accent-rgb' as string]: hexToRgbTriplet(accent),
+        ['--metric-from' as string]: String(clamp(asset.fromRatio ?? 0.22, 0.04, 1)),
+        ['--metric-to' as string]: String(clamp(asset.toRatio ?? 0.74, 0.04, 1)),
+      }}
+    >
+      <small className="asset-preview-metric-title">{asset.title || asset.label}</small>
+      <span className="asset-preview-metric-values">
+        <b className="asset-preview-live-number">{liveValue}</b>
+      </span>
+      <span className="asset-preview-metric-bar" aria-hidden="true">
+        <i />
+      </span>
+      <em>{asset.deltaLabel || asset.note}</em>
+    </span>
+  );
+}
+
+function SegmentedStoragePreview({ asset, className, durationMs }: { asset: VisualAsset; className: string; durationMs?: number }) {
+  const accent = normalizeHexColor(asset.accentColor, '#ff3b30');
+  const progress = useLoopingPreviewProgress(durationMs || asset.previewSpeed || 1800);
+  const liveValue = formatAnimatedAssetValue(asset.value || '0', asset.secondaryValue || asset.value || '0', progress);
+  const segments = normalizeAssetSegments(asset.segments);
+  return (
+    <span
+      className={className}
+      style={{
+        ['--metric-accent' as string]: accent,
+        ['--metric-accent-rgb' as string]: hexToRgbTriplet(accent),
+        ['--metric-from' as string]: String(clamp(asset.fromRatio ?? 0.22, 0.04, 1)),
+        ['--metric-to' as string]: String(clamp(asset.toRatio ?? 0.74, 0.04, 1)),
+      }}
+    >
+      <span className="asset-preview-storage-header">
+        <small className="asset-preview-storage-title">{asset.title || asset.label}</small>
+        <b className="asset-preview-storage-value asset-preview-live-number">{liveValue}</b>
+      </span>
+      <span className="asset-preview-storage-track" aria-hidden="true">
+        <span className="asset-preview-storage-fill">
+          {segments.map((segment) => (
+            <i
+              key={`${asset.id}-${segment.label || segment.color}`}
+              className="asset-preview-storage-segment"
+              style={{
+                ['--segment-share' as string]: String(segment.ratio),
+                ['--segment-color' as string]: normalizeHexColor(segment.color, accent),
+              }}
+            />
+          ))}
+        </span>
+      </span>
+      <span className="asset-preview-storage-legend">
+        {segments
+          .filter((segment) => segment.label)
+          .slice(0, 5)
+          .map((segment) => (
+            <span key={`${asset.id}-legend-${segment.label}`} className="asset-preview-storage-legend-item">
+              <i style={{ background: normalizeHexColor(segment.color, accent) }} />
+              <span>{segment.label}</span>
+            </span>
+          ))}
+      </span>
+    </span>
+  );
+}
+
+function useLoopingPreviewProgress(durationMs: number) {
+  const [progress, setProgress] = useState(0);
+
+  useEffect(() => {
+    let frameId = 0;
+    const duration = Math.max(400, durationMs);
+    const start = performance.now();
+
+    const tick = (now: number) => {
+      const elapsed = (now - start) / duration;
+      const cycle = elapsed % 2;
+      setProgress(cycle <= 1 ? cycle : 2 - cycle);
+      frameId = window.requestAnimationFrame(tick);
+    };
+
+    frameId = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(frameId);
+  }, [durationMs]);
+
+  return progress;
+}
+
+function normalizeAssetSegments(segments?: VisualAsset['segments']) {
+  const valid = (segments || []).filter((segment) => segment && Number.isFinite(segment.ratio) && segment.ratio > 0);
+  const total = valid.reduce((sum, segment) => sum + segment.ratio, 0) || 1;
+  return valid.map((segment) => ({
+    ...segment,
+    ratio: segment.ratio / total,
+  }));
+}
+
+function formatAnimatedAssetValue(rawValue: string, targetValue: string, progress: number) {
+  const parsed = parseAnimatedAssetValue(rawValue, targetValue);
+  if (!parsed) return targetValue || rawValue || '0';
+  const value = parsed.from + (parsed.to - parsed.from) * clamp(progress, 0, 1);
+  const formatted = parsed.decimals > 0 ? value.toFixed(parsed.decimals) : String(Math.round(value));
+  return `${parsed.prefix}${formatted}${parsed.suffix}`.replace(/\s{2,}/g, ' ').trim();
+}
+
+function parseAnimatedAssetValue(rawValue: string, targetValue: string) {
+  const sourceText = rawValue || '';
+  const targetText = targetValue || sourceText;
+  const sourceMatch = sourceText.match(/-?\d+(?:\.\d+)?/);
+  const targetMatch = targetText.match(/-?\d+(?:\.\d+)?/);
+  if (!sourceMatch || !targetMatch) return null;
+
+  const sourceIndex = sourceMatch.index ?? 0;
+  const targetIndex = targetMatch.index ?? 0;
+  const sourceNumber = Number.parseFloat(sourceMatch[0]);
+  const targetNumber = Number.parseFloat(targetMatch[0]);
+  if (!Number.isFinite(sourceNumber) || !Number.isFinite(targetNumber)) return null;
+
+  const sourcePrefix = sourceText.slice(0, sourceIndex);
+  const targetPrefix = targetText.slice(0, targetIndex);
+  const sourceSuffix = sourceText.slice(sourceIndex + sourceMatch[0].length);
+  const targetSuffix = targetText.slice(targetIndex + targetMatch[0].length);
+  const sourceDecimals = (sourceMatch[0].split('.')[1] || '').length;
+  const targetDecimals = (targetMatch[0].split('.')[1] || '').length;
+
+  return {
+    from: sourceNumber,
+    to: targetNumber,
+    decimals: Math.max(sourceDecimals, targetDecimals),
+    prefix: targetPrefix || sourcePrefix,
+    suffix: targetSuffix || sourceSuffix,
+  };
+}
+
+function ScanLibraryPreview({
+  asset,
+  preset,
+}: {
+  asset: VisualAsset;
+  preset: { scanStyle: ScanStyle; label: string; color: string; speed: number };
+}) {
+  const isRound = preset.scanStyle === 'ripple' || preset.scanStyle === 'ring' || preset.scanStyle === 'spotlight' || preset.scanStyle === 'spark';
+  const previewWidth = isRound ? 48 : preset.scanStyle === 'face' ? 54 : 66;
+  const previewHeight = isRound ? 48 : preset.scanStyle === 'face' ? 54 : 44;
+
+  return (
+    <span className={`scan-library-preview ${isRound ? 'round' : 'wide'}`}>
+      <span className="scan-library-preview-stage" />
+      <span
+        className={`preview-scan scan-${preset.scanStyle}`}
+        style={{
+          left: '50%',
+          top: '50%',
+          width: `${previewWidth}px`,
+          height: `${previewHeight}px`,
+          ['--scan-speed' as string]: `${preset.speed}ms`,
+          ['--scan-color' as string]: preset.color,
+          ['--scan-color-rgb' as string]: hexToRgbTriplet(preset.color),
+          ['--scan-scale-start' as string]: preset.scanStyle === 'spark' ? '0.88' : '0.68',
+          ['--scan-scale-end' as string]: preset.scanStyle === 'spark' ? '1.12' : '1.18',
+          ['--scan-opacity-start' as string]: preset.scanStyle === 'spark' ? '1' : '.88',
+          ['--scan-opacity-end' as string]: preset.scanStyle === 'spark' ? '.22' : '0',
+        }}
+      />
+      <em>{asset.scanStyle ? getScanAnimationLabel(asset.scanStyle) : preset.label}</em>
     </span>
   );
 }

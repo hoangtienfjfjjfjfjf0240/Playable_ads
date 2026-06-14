@@ -1067,6 +1067,7 @@ export function PlayableCloneStudio({ appId }: PlayableCloneStudioProps) {
             )}
           </section>
         </section>
+
       </section>
 
       <aside className="inspector clone-inspector">

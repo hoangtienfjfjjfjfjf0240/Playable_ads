@@ -332,11 +332,14 @@ function buildVariantPrompt(
   const distinctnessRule = buildDistinctnessRule(effectivePrompt, count, referenceMode);
   const styleDirection = buildVariantStyleDirection(effectivePrompt, index, referenceMode);
   const textPolicyInstruction = buildInImageTextPolicyInstruction(prompt);
-  const brandOverlayInstruction = buildBrandOverlayInstruction(options?.hasBrandAssetOverlay === true);
+  const brandOverlayInstruction = buildBrandOverlayInstruction(prompt, options?.hasBrandAssetOverlay === true);
+  const requestedBrandWordmarkInstruction = buildRequestedBrandWordmarkInstruction(prompt);
   const safeZoneInstruction = buildMobileSafeZoneInstruction(options?.hasBrandAssetOverlay === true);
   const referenceStyleInstruction = buildReferenceStyleInstruction(referenceMode);
+  const localizationInstruction = buildLocalizationLayoutInstruction(prompt);
   const additionalReferenceInstruction = buildAdditionalReferenceInstruction(referenceMode, referenceImageCount);
-  const directions = buildVariantCompositionDirection(index, referenceMode);
+  const directions = buildVariantCompositionDirection(index, referenceMode, prompt);
+  const variantIdentityInstruction = buildVariantIdentityInstruction(index, count, prompt, referenceMode);
 
   return [
     `Create variant ${index + 1} of ${Math.min(count, MAX_VARIANT_COUNT)} from the reference playable ad image.`,
@@ -345,14 +348,18 @@ function buildVariantPrompt(
     effectivePrompt,
     'Treat the campaign prompt as the main creative brief for the background image. Keep the requested scene, product category, and message instead of defaulting to the same room repeatedly.',
     referenceStyleInstruction,
+    localizationInstruction,
     additionalReferenceInstruction,
     textPolicyInstruction,
     brandOverlayInstruction,
+    requestedBrandWordmarkInstruction,
     distinctnessRule,
     styleDirection ? `Style direction for this specific variant: ${styleDirection}` : '',
     directions,
+    variantIdentityInstruction,
     'Return the static background creative image only; runtime hand, scan, text cue, click cue, and CTA button overlays will be added separately.',
     'Treat any prompt mention of hand, cue text, CTA text, tap instruction, or scan box as runtime overlay guidance, not bitmap content.',
+    'If the reference image contains a CTA button, tap prompt, install bar, scan label, or button-shaped text strip, remove it from the generated bitmap instead of translating or redrawing it.',
     'Do not add letterboxing, pillarboxing, black bars, outer borders, padding, or empty margins.',
     'Do not include editor UI, hand cursor, tap finger, scan target boxes, CTA buttons, install buttons, tap/click cue text, timelines, or export controls.',
     safeZoneInstruction,
@@ -361,9 +368,19 @@ function buildVariantPrompt(
     .join('\n');
 }
 
-function buildBrandOverlayInstruction(hasBrandAssetOverlay: boolean) {
+function buildBrandOverlayInstruction(prompt: string, hasBrandAssetOverlay: boolean) {
   if (!hasBrandAssetOverlay) return '';
+  const requestedBrandWordmark = extractRequestedBrandWordmark(prompt);
+  if (requestedBrandWordmark) {
+    return `A separate uploaded logo or icon overlay will be added later. Do not redraw the uploaded icon, mascot badge, app icon, or duplicate branded badge artwork inside the generated background image. The prompt explicitly requests the wordmark text "${requestedBrandWordmark}", so that exact text is allowed as clean branding or headline copy inside the creative. Remove other brand marks from the reference instead of recreating them.`;
+  }
   return 'A separate uploaded logo or icon overlay will be added later. Do not render any standalone logo, wordmark, app icon, mascot badge, corner branding, or brand sticker into the generated background image. Remove those brand marks from the reference instead of recreating them.';
+}
+
+function buildRequestedBrandWordmarkInstruction(prompt: string) {
+  const requestedBrandWordmark = extractRequestedBrandWordmark(prompt);
+  if (!requestedBrandWordmark) return '';
+  return `Requested brand wordmark: include the exact text "${requestedBrandWordmark}" once in the image as a clean wordmark or brand headline. Keep the spelling exactly as written unless the prompt explicitly asks to rename it. Do not turn it into a CTA button, chip, sticker, or scan label.`;
 }
 
 function buildReferenceStyleInstruction(referenceMode: 'image' | 'playable-import') {
@@ -371,6 +388,12 @@ function buildReferenceStyleInstruction(referenceMode: 'image' | 'playable-impor
     return 'Use the reference image as a strong visual anchor for product framing, palette balance, material cues, camera distance, and overall ad quality. Stay in the same visual family instead of drifting into a different look.';
   }
   return 'Use the imported playable frame as the primary style reference. Preserve the same visual language, palette family, contrast level, lighting mood, material treatment, device framing, background treatment, iconography feel, and overall ad-world style unless the prompt explicitly asks to change those things. Apply the user prompt inside that same creative system instead of drifting to a different art direction.';
+}
+
+function buildLocalizationLayoutInstruction(prompt: string) {
+  const language = extractRequestedLanguage(prompt);
+  if (!language) return '';
+  return `Localization mode: keep the same composition, crop, visual hierarchy, subject placement, and campaign system from the reference. Translate the visible market-facing copy into ${language} while keeping a similar line count, alignment, and text footprint. Preserve only headline or supporting marketing copy when needed. Do not preserve, translate, redraw, or invent CTA buttons, tap instructions, scan labels, chips, pill buttons, or other UI-style text inside the bitmap. Make only subtle local-market adjustments instead of changing the scene concept or rebuilding the layout.`;
 }
 
 function buildAdditionalReferenceInstruction(referenceMode: 'image' | 'playable-import', referenceImageCount: number) {
@@ -381,7 +404,7 @@ function buildAdditionalReferenceInstruction(referenceMode: 'image' | 'playable-
   return `There are ${referenceImageCount} additional uploaded reference images. Use them together with the primary reference image to improve detail accuracy, styling consistency, and visual fidelity. Treat the shared cues across those references as required guidance instead of optional inspiration, and do not ignore the secondary references.`;
 }
 
-function buildVariantCompositionDirection(index: number, referenceMode: 'image' | 'playable-import') {
+function buildVariantCompositionDirection(index: number, referenceMode: 'image' | 'playable-import', prompt: string) {
   const directions =
     referenceMode === 'playable-import'
       ? [
@@ -390,6 +413,20 @@ function buildVariantCompositionDirection(index: number, referenceMode: 'image' 
           'Preserve the source playable look and hierarchy, while introducing a modest alternate arrangement of secondary elements.',
           'Keep the same brand-world styling and rendering approach, but polish the layout for a clearer mobile read.',
         ]
+      : isLocalizationRequested(prompt) && wantsExplicitVariantDiversity(prompt)
+        ? [
+            'Keep the same overall layout skeleton as the reference, but change the hero subject, accent balance, and supporting props enough that this variant feels distinct.',
+            'Preserve the same campaign framing, while clearly changing the featured product or meal, crop emphasis, and decorative details.',
+            'Stay in the same localized campaign family, but give this variant a noticeably different hero composition and supporting scene rhythm.',
+            'Hold the same readability structure while varying subject matter, palette accents, and lower-scene details more boldly than a minor polish pass.',
+          ]
+      : isLocalizationRequested(prompt)
+        ? [
+            'Keep the same overall composition and text hierarchy as the reference, changing only small decorative or regional cues.',
+            'Preserve the same product framing and layout rhythm, with only slight crop or spacing refinement.',
+            'Stay in the same campaign family and scene concept, varying only minor supporting details.',
+            'Keep the layout almost unchanged while polishing readability and local-market nuance.',
+          ]
       : [
           'fresh composition, same product intent, stronger visual hierarchy',
           'new color balance and layout, same core message and mobile readability',
@@ -399,14 +436,36 @@ function buildVariantCompositionDirection(index: number, referenceMode: 'image' 
   return directions[index % directions.length];
 }
 
+function buildVariantIdentityInstruction(index: number, count: number, prompt: string, referenceMode: 'image' | 'playable-import') {
+  if (count <= 1) return '';
+  if (referenceMode === 'playable-import') return '';
+  if (!wantsExplicitVariantDiversity(prompt)) return '';
+
+  if (isFoodPrompt(prompt)) {
+    const mealDirections = [
+      'healthy berry oatmeal bowl with banana slices and soft pastel fruit color accents',
+      'protein plate with grilled salmon or chicken, avocado, and green vegetables',
+      'fresh yogurt or smoothie bowl with kiwi, berries, and crunchy granola texture',
+      'clean salad or grain bowl with cucumber, edamame, greens, and light citrus freshness',
+      'balanced breakfast plate with eggs, greens, toast, and bright natural garnish',
+      'fruit-forward summer bowl with mango, strawberry, banana, and refreshing tropical cues',
+    ];
+    const direction = mealDirections[index % mealDirections.length];
+    return `Variant-specific hero requirement: use a clearly different healthy meal for this variant, such as ${direction}. Do not reuse the same meal, same topping pattern, or near-identical plating from the other variants.`;
+  }
+
+  return 'Variant-specific hero requirement: this variant must differ clearly from the others in hero subject, supporting props, crop emphasis, and color accents while staying in the same campaign family.';
+}
+
 function buildMobileSafeZoneInstruction(hasBrandAssetOverlay: boolean) {
   const topLeftRule = hasBrandAssetOverlay
     ? 'Keep the upper-left corner relatively clean and low-detail so the separate logo overlay can sit there without colliding with important content.'
     : '';
   return [
-    'Respect mobile overlay safe zones. Keep the main subject, device, product, and any allowed headline comfortably inside the central composition instead of pushing them down to the bottom edge.',
-    'Avoid placing important content, dense detail, faces, phones, or text inside the bottom 18% of the frame. That lower area should stay simpler for runtime CTA overlays, but not look like an obvious empty band.',
-    'Do not crop or anchor the main subject too low. Keep enough breathing room above the bottom safe zone and away from the left and right edges.',
+    'Respect mobile overlay safe zones, but keep the image feeling full-bleed and naturally composed from top to bottom.',
+    'Keep the main subject, device, product, and any allowed headline inside the central composition instead of anchoring them too low.',
+    'Reserve only a modest CTA-safe zone near the bottom, roughly the bottom 10% to 12% of the frame, and keep that area visually connected to the rest of the background.',
+    'Do not create an obvious blank strip, white slab, hard horizon cutoff, or isolated empty band under the subject. Extend gradients, textures, shadows, lighting, or scenery naturally through the lower area.',
     topLeftRule,
   ]
     .filter(Boolean)
@@ -474,10 +533,16 @@ function normalizePromptText(value: string) {
     .toLowerCase();
 }
 
-type InImageTextPolicy = 'remove-all' | 'primary-only' | 'keep-all';
+type InImageTextPolicy = 'remove-all' | 'primary-only' | 'keep-all' | 'marketing-copy-only';
 
 function buildInImageTextPolicyInstruction(prompt: string) {
   const policy = resolveInImageTextPolicy(prompt);
+  const requestedBrandWordmark = extractRequestedBrandWordmark(prompt);
+  if (policy === 'marketing-copy-only') {
+    return requestedBrandWordmark
+      ? `In-image text policy: keep only marketing copy that belongs to the creative itself, such as one main headline, at most one short supporting line, and the explicitly requested brand wordmark "${requestedBrandWordmark}". Remove CTA buttons, install labels, tap instructions, scan labels, badges, sticker text, button-shaped pills, UI chips, editor UI, disclaimers, and tiny filler text. If the prompt requests another language, localize only the kept marketing copy, but preserve the requested brand wordmark unless the prompt explicitly asks to translate it.`
+      : 'In-image text policy: keep only marketing copy that belongs to the creative itself, such as one main headline and at most one short supporting line. Remove CTA buttons, install labels, tap instructions, scan labels, badges, sticker text, button-shaped pills, UI chips, editor UI, disclaimers, and tiny filler text. If the prompt requests another language, localize only the kept marketing copy.';
+  }
   if (policy === 'keep-all') {
     return 'In-image text policy: keep only the text explicitly requested in the prompt or clearly essential from the reference. Preserve the main headline and short supporting copy when needed, but still remove CTA buttons, scan labels, editor UI, disclaimers, and tiny filler text. If the prompt requests another language, use that language only for the kept text.';
   }
@@ -490,6 +555,7 @@ function buildInImageTextPolicyInstruction(prompt: string) {
 function resolveInImageTextPolicy(prompt: string): InImageTextPolicy {
   const value = normalizePromptText(prompt);
   if (/(remove|without|no|xoa|bo|an|hide).*(text|headline|copy|chu|title)/.test(value)) return 'remove-all';
+  if (isLocalizationRequested(prompt)) return 'marketing-copy-only';
   if (/(keep all text|giu tat ca text|giu toan bo text|giu full text|giu nguyen text|keep full copy|preserve all text|all text)/.test(value)) return 'keep-all';
   if (/(main text only|primary text only|headline only|only one headline|one main headline|keep main text|keep primary headline|giu text chinh|chi giu text chinh|chi de text chinh|giu headline chinh|giu tieu de chinh|text chinh thoi|headline chinh thoi)/.test(value)) {
     return 'primary-only';
@@ -500,10 +566,43 @@ function resolveInImageTextPolicy(prompt: string): InImageTextPolicy {
   return 'remove-all';
 }
 
+function isLocalizationRequested(prompt: string) {
+  return Boolean(extractRequestedLanguage(prompt)) || /localize cta text|localize market-facing copy/i.test(prompt);
+}
+
+function extractRequestedLanguage(prompt: string) {
+  const match = prompt.match(/language:\s*([^\n.]+)/i);
+  if (!match?.[1]) return '';
+  const value = match[1].trim();
+  return /^auto$/i.test(value) ? '' : value;
+}
+
+function extractRequestedBrandWordmark(prompt: string) {
+  const patterns = [
+    /(?:text\s*logo|logo\s*text|brand\s*text|wordmark)\s*(?:la|là|is|=|:)?\s*["“']?([a-z0-9][^"\n\r,.;]{0,48})["”']?/i,
+    /(?:them|thêm|add|keep|show|viet|write)\s*(?:text\s*)?(?:logo|wordmark|brand\s*text)\s*(?:la|là|is|=|:)?\s*["“']?([a-z0-9][^"\n\r,.;]{0,48})["”']?/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = prompt.match(pattern);
+    const value = match?.[1]?.trim();
+    if (!value) continue;
+    return value.replace(/\s+/g, ' ');
+  }
+
+  return '';
+}
+
 function buildDistinctnessRule(prompt: string, count: number, referenceMode: 'image' | 'playable-import') {
   if (count <= 1) return '';
   if (referenceMode === 'playable-import') {
     return 'Each variant must remain in the same creative family as the source playable. Do not switch to a different art direction, different brand mood, or unrelated visual style. Variants can change scene details, crop, supporting props, or layout emphasis, but should still feel like the same campaign system.';
+  }
+  if (isLocalizationRequested(prompt) && wantsExplicitVariantDiversity(prompt)) {
+    return 'Each localized variant must preserve the same campaign structure and readability, but differ clearly in the hero subject, supporting props, accent colors, crop emphasis, and scene details. Do not return near-duplicate variants with only tiny changes. If the prompt asks for different meals, products, or concepts across the batch, make every variant satisfy that explicitly.';
+  }
+  if (isLocalizationRequested(prompt)) {
+    return 'Each variant must stay very close to the source creative family and layout system. Only vary secondary props, crop, polish, or background micro-details slightly. Do not change the core composition, scene concept, product framing, or typography structure drastically between localized variants.';
   }
   if (isInteriorPrompt(prompt)) {
     return 'Each variant must look like a genuinely different room concept, not a minor edit of the same room. Change furniture family, wall treatment, flooring or rug, decor, lighting mood, materials, and camera framing between variants. Do not reuse the same sofa/window layout with only small recolors.';
@@ -515,6 +614,10 @@ function buildVariantStyleDirection(prompt: string, index: number, referenceMode
   const pack =
     referenceMode === 'playable-import'
       ? playableImportStyleDirections
+      : isLocalizationRequested(prompt) && wantsExplicitVariantDiversity(prompt)
+        ? localizedDiverseStyleDirections
+      : isLocalizationRequested(prompt)
+        ? localizedStyleDirections
       : isInteriorPrompt(prompt)
         ? interiorStyleDirections
         : genericStyleDirections;
@@ -525,6 +628,16 @@ function buildVariantStyleDirection(prompt: string, index: number, referenceMode
 function isInteriorPrompt(prompt: string) {
   const value = normalizePromptText(prompt);
   return /(living room|phong khach|interior|room design|room|sofa|bedroom|kitchen|furniture|home decor|decor room|noi that)/.test(value);
+}
+
+function wantsExplicitVariantDiversity(prompt: string) {
+  const value = normalizePromptText(prompt);
+  return /(khac nhau|moi anh|moi bien the|moi variant|different|distinct|unique|varied|variety|each variant|each image|separate concepts|different meals|different dishes|different foods)/.test(value);
+}
+
+function isFoodPrompt(prompt: string) {
+  const value = normalizePromptText(prompt);
+  return /(healthy|meal|dish|food|salad|bowl|plate|breakfast|lunch|dinner|fruit|vegetable|granola|yogurt|oat|protein|mon an|do an|bua an|eat clean|smoothie)/.test(value);
 }
 
 const interiorStyleDirections = [
@@ -578,6 +691,44 @@ const genericStyleDirections = [
   {
     label: 'Tech Forward',
     brief: 'sleek surfaces, cleaner geometry, futuristic polish, sharper highlights, more digital energy',
+  },
+] as const;
+
+const localizedStyleDirections = [
+  {
+    label: 'Source-Matched Localization',
+    brief: 'keep the same composition, product framing, and text block structure; only translate copy and localize subtle market cues',
+  },
+  {
+    label: 'Localized Layout Hold',
+    brief: 'preserve the same layout family and visual hierarchy while making only slight spacing and market-native styling refinements',
+  },
+  {
+    label: 'Localized Scene Match',
+    brief: 'stay in the same scene concept and campaign world; vary only minor props, crop, or atmospheric polish',
+  },
+  {
+    label: 'Localized Readability Polish',
+    brief: 'keep the original ad structure nearly unchanged while improving localized readability and cultural fit',
+  },
+] as const;
+
+const localizedDiverseStyleDirections = [
+  {
+    label: 'Localized Family Variety',
+    brief: 'preserve the same localized campaign layout, but make the hero subject and supporting props clearly different from the other variants',
+  },
+  {
+    label: 'Localized Product Swap',
+    brief: 'hold the same text hierarchy and framing system while changing the featured meal or product and accent balance more noticeably',
+  },
+  {
+    label: 'Localized Scene Refresh',
+    brief: 'stay in the same campaign world but vary crop emphasis, scene details, and hero styling enough to avoid near-duplicates',
+  },
+  {
+    label: 'Localized Distinct Readability',
+    brief: 'keep mobile readability and brand consistency, but give this variant a more distinct subject, prop mix, and palette accents',
   },
 ] as const;
 

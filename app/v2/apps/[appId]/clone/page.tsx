@@ -1,12 +1,10 @@
-'use client';
+import { redirect } from 'next/navigation';
 
-import { useParams } from 'next/navigation';
-import { PlayableCloneStudio } from '../../../../../components/PlayableCloneStudio';
+type ClonePlayableV2PageProps = {
+  params: Promise<{ appId: string }>;
+};
 
-export default function ClonePlayableV2Page() {
-  const params = useParams<{ appId: string }>();
-  const appId = Array.isArray(params?.appId) ? params.appId[0] : params?.appId;
-
-  if (!appId) return null;
-  return <PlayableCloneStudio appId={appId} />;
+export default async function ClonePlayableV2Page({ params }: ClonePlayableV2PageProps) {
+  const { appId } = await params;
+  redirect(`/v2/apps/${appId}`);
 }
