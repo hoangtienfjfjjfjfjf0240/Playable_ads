@@ -769,7 +769,15 @@ export function hasStaticLocaleCopy(locale: ContentLocale) {
 
 export function applyContentLocaleToPrompt(prompt: string, locale: ContentLocale) {
   const base = prompt.trim();
-  if (locale === 'auto') return base;
+  if (locale === 'auto') {
+    if (!base || resolvePromptLocale(base) !== 'auto') return base;
+    return [
+      'Language: English.',
+      'Default output language: English. Treat the natural language used to write this prompt as instruction language only, not as the display language inside the generated image.',
+      'Only render another language in-image when the prompt explicitly includes a Language: <language> instruction or when the locale selector is set to a specific language.',
+      base,
+    ].join('\n');
+  }
   const option = getContentLocaleOption(locale);
   const sanitizedBase = stripPromptLanguageInstructions(base);
   return [

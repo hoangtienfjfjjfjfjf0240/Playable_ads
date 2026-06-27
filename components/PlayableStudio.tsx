@@ -87,6 +87,7 @@ import {
   playableIntentLabels,
 } from '../lib/playable-plan';
 import { buttonPresets, defaultLayerSettings, handMotionPresets, recipePresets, scanPresets, textCuePresets } from '../lib/presets';
+import { compilePlayableGenerationPrompt } from '../lib/playable-prompt-compiler';
 import { getSupabaseBrowser } from '../lib/supabase-browser';
 import { withStudioRoutePrefix } from '../lib/studio-routes';
 import { getVisualAsset, visualAssets } from '../lib/visual-assets';
@@ -136,6 +137,16 @@ type GenerationHistoryEntry = {
   durationSeconds: number | null;
   variants: PlayableVariant[];
 };
+
+const PROMPT_STARTER_TEMPLATE = [
+  'Goal: summer ad creative for this product',
+  'Hero: main product or subject in center',
+  'Layout: keep same composition as reference',
+  'Logo text: brand name if needed',
+  'Remove: old logo, in-image CTA, extra UI text',
+  'Language: English',
+  'Variants: each variant changes hero details but stays in the same campaign family',
+].join('\n');
 
 type EditorHistorySnapshot = {
   settings: ProjectSettings;
@@ -691,6 +702,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
   const lastSavedSnapshotRef = useRef('');
   const lastFailedSnapshotRef = useRef('');
   const draftBaselineSnapshotRef = useRef('');
+  const savedBinaryStateRef = useRef<SavedBinaryState>({ sourceId: '', referenceIds: [], variantIds: [] });
   const pendingPersistRef = useRef(false);
   const localeSyncRef = useRef<ProjectSettings['locale']>('auto');
   const localeTranslationSequenceRef = useRef(0);
@@ -812,6 +824,21 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
   const requestedProjectName = searchParams?.get('name') || '';
   const wantsFreshProject = searchParams?.get('new') === '1';
   const localizedPrompt = useMemo(() => applyContentLocaleToPrompt(settings.prompt, settings.locale), [settings.locale, settings.prompt]);
+  const generationPrompt = useMemo(
+    () =>
+      applyContentLocaleToPrompt(
+        compilePlayableGenerationPrompt({
+          prompt: settings.prompt,
+          locale: settings.locale,
+          sourceKind: activeSource?.kind || 'image',
+          referenceCount: referenceImages.length,
+          variantCount: targetVariantCount,
+          hasBrandAsset: Boolean(settings.brandAssetDataUrl),
+        }),
+        settings.locale,
+      ),
+    [activeSource?.kind, referenceImages.length, settings.brandAssetDataUrl, settings.locale, settings.prompt, targetVariantCount],
+  );
   const syncEditorHistoryDepth = useCallback(() => {
     setUndoDepth(Math.max(0, editorHistoryPastRef.current.length - 1));
     setRedoDepth(editorHistoryFutureRef.current.length);
@@ -1056,14 +1083,16 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
     return buildProjectAutosaveSnapshot(buildProjectSavePayload({
       id: currentProjectId || '',
       appId,
+      sourceId: activeSource?.id || '',
       name: settings.name,
       prompt: settings.prompt,
       settings,
       sourceImageDataUrl: activeSource?.dataUrl || '',
       referenceImages,
       variants,
+      savedBinaryState: savedBinaryStateRef.current,
     }));
-  }, [activeSource?.dataUrl, appId, appScopedEditor, currentProjectId, referenceImages, settings, variants]);
+  }, [activeSource?.dataUrl, activeSource?.id, appId, appScopedEditor, currentProjectId, referenceImages, settings, variants]);
   const hasProjectContent = Boolean(activeSource?.dataUrl || variants.length);
   const hasPersistableProject = Boolean(appScopedEditor && appId && hasProjectContent);
   const hasUnsavedProjectChanges = Boolean(autosaveSnapshot && autosaveSnapshot !== lastSavedSnapshotRef.current);
@@ -1192,6 +1221,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
       setSelectedLayer('hand');
       setHtmlLayerSettings(normalizeLayerSettings(defaultLayerSettings));
       lastSavedSnapshotRef.current = '';
+      savedBinaryStateRef.current = { sourceId: '', referenceIds: [], variantIds: [] };
       draftBaselineSnapshotRef.current = '';
       setAutosaveState('idle');
       setAutosaveError('');
@@ -1272,6 +1302,20 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
   const setProjectSetting = <K extends keyof ProjectSettings>(key: K, value: ProjectSettings[K]) => {
     setSettings((current) => ({ ...current, [key]: value }));
   };
+  const applyPromptStarterTemplate = useCallback(() => {
+    const current = settings.prompt.trim();
+    if (!current || current === defaultProjectPrompt || current === legacyDefaultProjectPrompt) {
+      setProjectSetting('prompt', PROMPT_STARTER_TEMPLATE);
+      setNotice({ tone: 'ok', text: 'Đã điền prompt mẫu để member chỉ việc sửa từng dòng.' });
+      return;
+    }
+    if (/^goal\s*:/im.test(current)) {
+      setNotice({ tone: 'ok', text: 'Prompt đang ở dạng mẫu rồi, bạn chỉ cần sửa nội dung từng dòng.' });
+      return;
+    }
+    setProjectSetting('prompt', `${current}\n\n${PROMPT_STARTER_TEMPLATE}`);
+    setNotice({ tone: 'ok', text: 'Đã chèn khung prompt mẫu bên dưới để member điền tiếp.' });
+  }, [settings.prompt]);
 
   const saveProject = useCallback(
     async ({ silent = false, force = false }: { silent?: boolean; force?: boolean } = {}) => {
@@ -1292,12 +1336,14 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
       const savePayload = buildProjectSavePayload({
         id: stableProjectId,
         appId: appId || '',
+        sourceId: activeSource?.id || '',
         name: settings.name,
         prompt: settings.prompt,
         settings,
         sourceImageDataUrl: activeSource?.dataUrl || '',
         referenceImages,
         variants,
+        savedBinaryState: savedBinaryStateRef.current,
       });
       const snapshot = buildProjectAutosaveSnapshot(savePayload);
       if (!force && snapshot === lastSavedSnapshotRef.current) {
@@ -1345,6 +1391,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
           pendingProjectIdRef.current = savedId;
           setCurrentProjectId(savedId);
           lastFailedSnapshotRef.current = '';
+          savedBinaryStateRef.current = buildSavedBinaryState(activeSource?.id || '', referenceImages, variants);
           lastSavedSnapshotRef.current = buildProjectAutosaveSnapshot({
             ...savePayload,
             id: savedId,
@@ -1378,7 +1425,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         if (!silent) setBusy(false);
       }
     },
-    [activeSource?.dataUrl, appId, appScopedEditor, authToken, hasProjectContent, referenceImages, settings, variants],
+    [activeSource?.dataUrl, activeSource?.id, appId, appScopedEditor, authToken, hasProjectContent, referenceImages, settings, variants],
   );
 
   const resetCurrentProject = useCallback((nextProjectName?: string) => {
@@ -1387,6 +1434,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
     const baselineSnapshot = buildProjectAutosaveSnapshot(buildProjectSavePayload({
       id: '',
       appId: appId || '',
+      sourceId: '',
       name: projectName,
       prompt: baseSettings.prompt,
       settings: {
@@ -1396,10 +1444,12 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
       sourceImageDataUrl: '',
       referenceImages: [],
       variants: [],
+      savedBinaryState: { sourceId: '', referenceIds: [], variantIds: [] },
     }));
     lastSavedSnapshotRef.current = '';
     lastFailedSnapshotRef.current = '';
     draftBaselineSnapshotRef.current = baselineSnapshot;
+    savedBinaryStateRef.current = { sourceId: '', referenceIds: [], variantIds: [] };
     pendingPersistRef.current = false;
     setAutosaveState('idle');
     setAutosaveError('');
@@ -1480,6 +1530,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         if (!response.ok) throw new Error(typeof payload?.error === 'string' ? payload.error : 'Cannot load project.');
 
         const project = payload.project as StudioProjectDetail;
+        const restoredSettings = normalizeProjectSettings(stripProjectSettingsForSave(project.settings || createDefaultProjectSettings()));
         const restoredReferenceImages = normalizeReferenceImageInputs(project.referenceImages);
         const sourceId = `source-${project.id}`;
         const sourceItem: SourceItem | null = project.sourceImageDataUrl
@@ -1495,39 +1546,37 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
               createdAt: Date.now(),
             }
           : null;
+        const restoredVariants = project.variants.map((variant, index) => ({
+          ...variant,
+          sourceId,
+          index: Number(variant.index) || index + 1,
+          hotspot: variant.hotspot || { x: 50, y: 72, confidence: 0.28 },
+          settings: restoreLoadedLayerSettings(variant.settings, restoredSettings),
+        }));
+        const nextSavedBinaryState = buildSavedBinaryState(sourceItem?.id || '', restoredReferenceImages, restoredVariants);
 
         setCurrentProjectId(project.id);
         currentProjectIdRef.current = project.id;
         pendingProjectIdRef.current = project.id;
-        setSettings(normalizeProjectSettings(project.settings || createDefaultProjectSettings()));
+        setSettings(restoredSettings);
         setReferenceImages(restoredReferenceImages);
         setSources(sourceItem ? [sourceItem] : []);
         setActiveSourceId(sourceItem?.id || '');
-        setVariants(
-          project.variants.map((variant, index) => ({
-            ...variant,
-            sourceId,
-            index: Number(variant.index) || index + 1,
-            hotspot: variant.hotspot || { x: 50, y: 72, confidence: 0.28 },
-            settings: normalizeLayerSettings(variant.settings),
-          })),
-        );
+        setVariants(restoredVariants);
         setSelectedVariantId(project.variants[0]?.id || '');
         rebaseEditorHistory();
+        savedBinaryStateRef.current = nextSavedBinaryState;
         lastSavedSnapshotRef.current = buildProjectAutosaveSnapshot(buildProjectSavePayload({
           id: project.id,
           appId: project.appId,
-          name: project.settings?.name || project.name,
+          sourceId,
+          name: restoredSettings.name || project.name,
           prompt: project.prompt,
-          settings: normalizeProjectSettings(project.settings || createDefaultProjectSettings()),
+          settings: restoredSettings,
           sourceImageDataUrl: sourceItem?.dataUrl || '',
           referenceImages: restoredReferenceImages,
-          variants: project.variants.map((variant) => ({
-            ...variant,
-            sourceId,
-            hotspot: variant.hotspot || { x: 50, y: 72, confidence: 0.28 },
-            settings: normalizeLayerSettings(variant.settings),
-          })),
+          variants: restoredVariants,
+          savedBinaryState: nextSavedBinaryState,
         }));
         lastFailedSnapshotRef.current = '';
         draftBaselineSnapshotRef.current = lastSavedSnapshotRef.current;
@@ -1942,7 +1991,7 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
         body: JSON.stringify({
           imageDataUrl: activeSource.dataUrl,
           referenceImageDataUrls: referenceImages.map((reference) => reference.dataUrl),
-          prompt: localizedPrompt,
+          prompt: generationPrompt,
           hasBrandAssetOverlay: Boolean(settings.brandAssetDataUrl),
           referenceMode: activeSource.kind === 'html' ? 'playable-import' : 'image',
           count: targetVariantCount,
@@ -3271,9 +3320,23 @@ export function PlayableStudio({ appId = '' }: PlayableStudioProps) {
 
         <section className="panel-section">
           <label className="field">
-            <span>Mô tả</span>
-            <textarea rows={5} value={settings.prompt} onChange={(event) => setProjectSetting('prompt', event.target.value)} />
+            <span>Mô tả / skill prompt</span>
+            <textarea
+              rows={5}
+              value={settings.prompt}
+              placeholder={PROMPT_STARTER_TEMPLATE}
+              onChange={(event) => setProjectSetting('prompt', event.target.value)}
+            />
           </label>
+          <div className="prompt-template-actions">
+            <button className="secondary-button" type="button" onClick={applyPromptStarterTemplate}>
+              <WandSparkles size={15} />
+              Điền mẫu cho member
+            </button>
+          </div>
+          <p className="field-help">
+            Cứ điền theo kiểu <code>Goal</code>, <code>Hero</code>, <code>Layout</code>, <code>Remove</code>, <code>Language</code>, <code>Variants</code>. Hệ thống sẽ tự biên dịch lại thành prompt sạch hơn trước khi AI generate.
+          </p>
           <label className="field">
             <span>Ngôn ngữ localize</span>
             <ContentLocalePicker value={settings.locale} onChange={(value) => setProjectSetting('locale', value)} />
@@ -5532,6 +5595,7 @@ function buildDateProjectName(date = new Date()) {
 type ProjectSavePayload = {
   id: string;
   appId?: string;
+  sourceId?: string;
   name: string;
   prompt: string;
   settings: ProjectSettings;
@@ -5551,36 +5615,47 @@ type ProjectSavePayload = {
   }>;
 };
 
+type SavedBinaryState = {
+  sourceId: string;
+  referenceIds: string[];
+  variantIds: string[];
+};
+
 function buildProjectSavePayload({
   id,
   appId,
+  sourceId,
   name,
   prompt,
   settings,
   sourceImageDataUrl,
   referenceImages,
   variants,
+  savedBinaryState,
 }: {
   id: string;
   appId: string;
+  sourceId: string;
   name: string;
   prompt: string;
   settings: ProjectSettings;
   sourceImageDataUrl: string;
   referenceImages: ReferenceImageInput[];
   variants: PlayableVariant[];
+  savedBinaryState: SavedBinaryState;
 }): ProjectSavePayload {
   return {
     id: safeString(id),
     appId: safeString(appId) || undefined,
+    sourceId: safeString(sourceId) || undefined,
     name: safeString(name),
     prompt: safeString(prompt),
-    settings: toJsonSafe(normalizeProjectSettings(settings)),
-    sourceImageDataUrl: safeString(sourceImageDataUrl),
+    settings: toJsonSafe(stripProjectSettingsForSave(normalizeProjectSettings(settings))),
+    sourceImageDataUrl: shouldPersistBinaryData(safeString(sourceId), savedBinaryState.sourceId) ? safeString(sourceImageDataUrl) : '',
     referenceImages: normalizeReferenceImageInputs(referenceImages).map((reference, index) => ({
       id: safeString(reference.id) || `reference-${index + 1}`,
       name: safeString(reference.name) || `Reference ${index + 1}`,
-      dataUrl: safeString(reference.dataUrl),
+      dataUrl: shouldPersistBinaryData(safeString(reference.id), savedBinaryState.referenceIds) ? safeString(reference.dataUrl) : '',
       width: safeInteger(reference.width),
       height: safeInteger(reference.height),
       createdAt: safeInteger(reference.createdAt, Date.now()),
@@ -5590,7 +5665,7 @@ function buildProjectSavePayload({
       sourceId: safeString(variant.sourceId),
       index: safeInteger(variant.index, index + 1),
       name: safeString(variant.name) || `Variant ${index + 1}`,
-      dataUrl: safeString(variant.dataUrl),
+      dataUrl: shouldPersistBinaryData(safeString(variant.id), savedBinaryState.variantIds) ? safeString(variant.dataUrl) : '',
       width: safeNumber(variant.width),
       height: safeNumber(variant.height),
       revisedPrompt: safeString(variant.revisedPrompt),
@@ -5600,13 +5675,91 @@ function buildProjectSavePayload({
         confidence: clamp(safeNumber(variant.hotspot?.confidence, 0.28), 0, 1),
         ...(typeof variant.hotspot?.reason === 'string' ? { reason: variant.hotspot.reason } : {}),
       }),
-      settings: toJsonSafe(normalizeLayerSettings(variant.settings)),
+      settings: toJsonSafe(stripLayerSettingsForSave(normalizeLayerSettings(variant.settings), settings)),
     })),
   };
 }
 
 function buildProjectAutosaveSnapshot(payload: ProjectSavePayload) {
-  return JSON.stringify(payload);
+  return JSON.stringify({
+    id: payload.id,
+    appId: payload.appId,
+    sourceId: payload.sourceId || '',
+    name: payload.name,
+    prompt: payload.prompt,
+    settings: buildAutosaveSettingsSnapshot(payload.settings),
+    referenceImages: payload.referenceImages.map((reference) => ({
+      id: reference.id,
+      name: reference.name,
+      width: reference.width,
+      height: reference.height,
+      createdAt: reference.createdAt,
+    })),
+    variants: payload.variants.map((variant) => ({
+      id: variant.id,
+      sourceId: variant.sourceId,
+      index: variant.index,
+      name: variant.name,
+      width: variant.width,
+      height: variant.height,
+      revisedPrompt: variant.revisedPrompt,
+      hotspot: variant.hotspot,
+      settings: buildAutosaveLayerSnapshot(variant.settings),
+    })),
+  });
+}
+
+function shouldPersistBinaryData(id: string, saved: string | string[]) {
+  if (!id) return true;
+  if (typeof saved === 'string') return saved !== id;
+  return !saved.includes(id);
+}
+
+function buildSavedBinaryState(sourceId: string, referenceImages: ReferenceImageInput[], variants: PlayableVariant[]): SavedBinaryState {
+  return {
+    sourceId: safeString(sourceId),
+    referenceIds: normalizeReferenceImageInputs(referenceImages).map((reference) => safeString(reference.id)).filter(Boolean),
+    variantIds: variants.map((variant) => safeString(variant.id)).filter(Boolean),
+  };
+}
+
+function stripProjectSettingsForSave(settings: ProjectSettings): ProjectSettings {
+  const next = { ...settings } as Record<string, unknown>;
+  delete next.__storageMeta;
+  return next as unknown as ProjectSettings;
+}
+
+function stripLayerSettingsForSave(layer: LayerSettings, settings: ProjectSettings): LayerSettings {
+  if (!settings.brandAssetDataUrl) return layer;
+  if (layer.customAssetDataUrl !== settings.brandAssetDataUrl) return layer;
+  return {
+    ...layer,
+    customAssetDataUrl: '',
+  };
+}
+
+function restoreLoadedLayerSettings(layer: LayerSettings, settings: ProjectSettings): LayerSettings {
+  const normalized = normalizeLayerSettings(layer);
+  if (!settings.brandAssetDataUrl || normalized.customAssetDataUrl || !normalized.injectAsset) return normalized;
+  return {
+    ...normalized,
+    customAssetDataUrl: settings.brandAssetDataUrl,
+    customAssetName: normalized.customAssetName || settings.brandAssetName,
+  };
+}
+
+function buildAutosaveSettingsSnapshot(settings: ProjectSettings) {
+  return {
+    ...settings,
+    brandAssetDataUrl: settings.brandAssetDataUrl ? `[data:${settings.brandAssetName || 'brand'}:${settings.brandAssetDataUrl.length}]` : '',
+  };
+}
+
+function buildAutosaveLayerSnapshot(layer: LayerSettings) {
+  return {
+    ...layer,
+    customAssetDataUrl: layer.customAssetDataUrl ? `[data:${layer.customAssetName || 'asset'}:${layer.customAssetDataUrl.length}]` : '',
+  };
 }
 
 function normalizeReferenceImageInputs(items: unknown): ReferenceImageInput[] {

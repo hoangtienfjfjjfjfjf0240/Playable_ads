@@ -464,8 +464,9 @@ function buildMobileSafeZoneInstruction(hasBrandAssetOverlay: boolean) {
   return [
     'Respect mobile overlay safe zones, but keep the image feeling full-bleed and naturally composed from top to bottom.',
     'Keep the main subject, device, product, and any allowed headline inside the central composition instead of anchoring them too low.',
-    'Reserve only a modest CTA-safe zone near the bottom, roughly the bottom 10% to 12% of the frame, and keep that area visually connected to the rest of the background.',
-    'Do not create an obvious blank strip, white slab, hard horizon cutoff, or isolated empty band under the subject. Extend gradients, textures, shadows, lighting, or scenery naturally through the lower area.',
+    'Keep the lower quarter of the frame visually quieter than the hero area so CTA, hand, or scan overlays can sit there cleanly.',
+    'Use simple background material in that lower quarter, such as soft gradients, flooring, wall texture, sand, water, plain table surface, or other normal background treatment instead of dense props or fine detail.',
+    'Do not create an obvious blank strip, white slab, hard horizon cutoff, or isolated empty band under the subject. Extend the scene naturally through the lower area, but avoid faces, busy object clusters, tiny icons, repeated text, or heavy UI detail there.',
     topLeftRule,
   ]
     .filter(Boolean)

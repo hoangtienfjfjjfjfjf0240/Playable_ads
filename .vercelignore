@@ -1,0 +1,12 @@
+.git
+.next
+node_modules
+exports
+.env.local
+.logs
+*.log
+*.err
+*.out
+.tmp-*
+.tmp-video-frames
+playable-studio-preview.png

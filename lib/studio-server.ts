@@ -22,6 +22,10 @@ const BUCKET = 'playable-assets';
 const DEFAULT_APP_NAME = 'Playable Studio';
 const APP_ACCENT_COLORS = ['#2563eb', '#14b8a6', '#f59e0b', '#8b5cf6', '#ec4899', '#10b981'];
 const PRESET_APP_NAMES = [DEFAULT_APP_NAME];
+const PROJECT_STORAGE_META_KEY = '__storageMeta';
+
+let bucketReadyPromise: Promise<void> | null = null;
+const ensuredWorkspaceUsers = new Set<string>();
 
 type AdminClient = NonNullable<ReturnType<typeof getSupabaseAdmin>>;
 
@@ -74,6 +78,15 @@ type ProjectRow = {
   variants: unknown;
   created_at: string;
   updated_at: string;
+};
+
+type StoredReferenceImageMeta = {
+  id: string;
+  name: string;
+  path: string;
+  width: number;
+  height: number;
+  createdAt: number;
 };
 
 export type StudioRequestContext = {
@@ -298,9 +311,21 @@ export async function loadProjectDetail(ctx: StudioRequestContext, projectId: st
   const row = data as unknown as ProjectRow;
   await assertWorkspaceAccess(ctx, row.workspace_id);
 
+  const settings = stripProjectStorageMeta(isRecord(row.settings) ? row.settings : {}) as unknown as ProjectSettings;
+  const savedReferenceImages = readStoredReferenceImages(row.settings);
   const sourceImageDataUrl = row.source_image_path ? await downloadStorageAsDataUrl(ctx.supabase, row.source_image_path) : '';
   const sourceId = `source-${row.id}`;
   const savedVariants = Array.isArray(row.variants) ? (row.variants as Array<Record<string, unknown>>) : [];
+  const referenceImages = await Promise.all(
+    savedReferenceImages.map(async (reference) => ({
+      id: reference.id,
+      name: reference.name,
+      dataUrl: reference.path ? await downloadStorageAsDataUrl(ctx.supabase, reference.path) : '',
+      width: reference.width,
+      height: reference.height,
+      createdAt: reference.createdAt,
+    })),
+  );
   const variants = await Promise.all(
     savedVariants.map(async (variant, index) => {
       const imagePath = typeof variant.image_path === 'string' ? variant.image_path : '';
@@ -329,8 +354,9 @@ export async function loadProjectDetail(ctx: StudioRequestContext, projectId: st
     appId: row.app_id,
     ownerUserId: row.owner_user_id,
     ownerEmail: row.owner_email || '',
-    settings: row.settings || ({} as ProjectSettings),
+    settings,
     sourceImageDataUrl,
+    referenceImages,
     variants,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -353,32 +379,80 @@ export async function saveProjectRecord(ctx: StudioRequestContext, body: Record<
 
   await ensureBucket(ctx.supabase);
 
+  const inputSettings = isRecord(body.settings) ? body.settings : isRecord(existing?.settings) ? existing.settings : {};
+  const existingReferenceImageMap = new Map(readStoredReferenceImages(existing?.settings).map((reference) => [reference.id, reference]));
+  const existingVariantPathMap = new Map<string, string>();
+  if (Array.isArray(existing?.variants)) {
+    for (const rawVariant of existing.variants as Array<Record<string, unknown>>) {
+      const variantId = typeof rawVariant.id === 'string' ? rawVariant.id : '';
+      const imagePath = typeof rawVariant.image_path === 'string' ? rawVariant.image_path : '';
+      if (variantId && imagePath) {
+        existingVariantPathMap.set(variantId, imagePath);
+      }
+    }
+  }
+
   const sourceImageDataUrl = typeof body.sourceImageDataUrl === 'string' ? body.sourceImageDataUrl : '';
-  const sourcePath = sourceImageDataUrl
-    ? await uploadDataUrl(ctx.supabase, `projects/${projectId}/source.${guessExtension(sourceImageDataUrl)}`, sourceImageDataUrl)
-    : existing?.source_image_path || null;
+  const sourcePathPromise = sourceImageDataUrl
+    ? uploadDataUrl(ctx.supabase, existing?.source_image_path || `projects/${projectId}/source.${guessExtension(sourceImageDataUrl)}`, sourceImageDataUrl)
+    : Promise.resolve(existing?.source_image_path || null);
+
+  const rawReferenceImages = Array.isArray(body.referenceImages) ? body.referenceImages : [];
+  const referenceImagesPromise = Promise.all(
+    rawReferenceImages.map(async (rawReference, index) => {
+      const reference = isRecord(rawReference) ? rawReference : {};
+      const referenceId = typeof reference.id === 'string' && reference.id ? reference.id : `reference-${index + 1}`;
+      const existingReference = existingReferenceImageMap.get(referenceId);
+      const dataUrl = typeof reference.dataUrl === 'string' ? reference.dataUrl : '';
+      const imagePath = dataUrl
+        ? await uploadDataUrl(
+            ctx.supabase,
+            existingReference?.path || `projects/${projectId}/reference-${index + 1}.${guessExtension(dataUrl)}`,
+            dataUrl,
+          )
+        : existingReference?.path || '';
+
+      return {
+        id: referenceId,
+        name: typeof reference.name === 'string' && reference.name ? reference.name : existingReference?.name || `Reference ${index + 1}`,
+        path: imagePath,
+        width: Number(reference.width) || existingReference?.width || 0,
+        height: Number(reference.height) || existingReference?.height || 0,
+        createdAt: Number(reference.createdAt) || existingReference?.createdAt || Date.now(),
+      } satisfies StoredReferenceImageMeta;
+    }),
+  );
 
   const rawVariants = Array.isArray(body.variants) ? body.variants : [];
-  const variants = [];
-  for (const [index, rawVariant] of rawVariants.entries()) {
-    const variant = isRecord(rawVariant) ? rawVariant : {};
-    const dataUrl = typeof variant.dataUrl === 'string' ? variant.dataUrl : '';
-    const imagePath = dataUrl
-      ? await uploadDataUrl(ctx.supabase, `projects/${projectId}/variant-${index + 1}.${guessExtension(dataUrl)}`, dataUrl)
-      : '';
+  const variantsPromise = Promise.all(
+    rawVariants.map(async (rawVariant, index) => {
+      const variant = isRecord(rawVariant) ? rawVariant : {};
+      const variantId = typeof variant.id === 'string' && variant.id ? variant.id : crypto.randomUUID();
+      const dataUrl = typeof variant.dataUrl === 'string' ? variant.dataUrl : '';
+      const imagePath = dataUrl
+        ? await uploadDataUrl(
+            ctx.supabase,
+            existingVariantPathMap.get(variantId) || `projects/${projectId}/variant-${index + 1}.${guessExtension(dataUrl)}`,
+            dataUrl,
+          )
+        : existingVariantPathMap.get(variantId) || '';
 
-    variants.push({
-      id: typeof variant.id === 'string' ? variant.id : crypto.randomUUID(),
-      index: Number(variant.index) || index + 1,
-      name: typeof variant.name === 'string' ? variant.name : `Variant ${index + 1}`,
-      width: Number(variant.width) || null,
-      height: Number(variant.height) || null,
-      image_path: imagePath,
-      hotspot: isRecord(variant.hotspot) ? variant.hotspot : null,
-      settings: isRecord(variant.settings) ? variant.settings : null,
-      revised_prompt: typeof variant.revisedPrompt === 'string' ? variant.revisedPrompt : '',
-    });
-  }
+      return {
+        id: variantId,
+        index: Number(variant.index) || index + 1,
+        name: typeof variant.name === 'string' ? variant.name : `Variant ${index + 1}`,
+        width: Number(variant.width) || null,
+        height: Number(variant.height) || null,
+        image_path: imagePath,
+        hotspot: isRecord(variant.hotspot) ? variant.hotspot : null,
+        settings: isRecord(variant.settings) ? variant.settings : null,
+        revised_prompt: typeof variant.revisedPrompt === 'string' ? variant.revisedPrompt : '',
+      };
+    }),
+  );
+
+  const [sourcePath, referenceImages, variants] = await Promise.all([sourcePathPromise, referenceImagesPromise, variantsPromise]);
+  const settings = withStoredReferenceImages(inputSettings, referenceImages);
 
   const projectPayload = {
     id: projectId,
@@ -393,7 +467,7 @@ export async function saveProjectRecord(ctx: StudioRequestContext, body: Record<
       now,
     ),
     prompt: String(body.prompt || existing?.prompt || ''),
-    settings: isRecord(body.settings) ? body.settings : existing?.settings || {},
+    settings,
     source_image_path: sourcePath,
     variants,
     updated_at: now,
@@ -423,29 +497,46 @@ async function ensureStudioIdentity(supabase: AdminClient, user: User) {
   const displayName =
     String(user.user_metadata?.display_name || user.user_metadata?.full_name || user.user_metadata?.name || email.split('@')[0] || 'Studio User').trim() || 'Studio User';
   const existing = await getProfileRow(supabase, user.id);
-  const role = existing?.role || (await resolveInitialRole(supabase, email));
-  const now = new Date().toISOString();
+  const needsProfileUpsert =
+    !existing ||
+    existing.email !== email ||
+    existing.display_name !== displayName ||
+    !existing.role;
 
-  const { data, error } = await supabase
-    .from('playable_profiles')
-    .upsert(
-      {
-        user_id: user.id,
-        email,
-        display_name: displayName,
-        role,
-        created_at: existing?.created_at || now,
-        updated_at: now,
-      },
-      { onConflict: 'user_id' },
-    )
-    .select('*')
-    .single();
+  let profile = existing;
+  if (needsProfileUpsert) {
+    const role = existing?.role || (await resolveInitialRole(supabase, email));
+    const now = new Date().toISOString();
+    const { data, error } = await supabase
+      .from('playable_profiles')
+      .upsert(
+        {
+          user_id: user.id,
+          email,
+          display_name: displayName,
+          role,
+          created_at: existing?.created_at || now,
+          updated_at: now,
+        },
+        { onConflict: 'user_id' },
+      )
+      .select('*')
+      .single();
 
-  if (error) throw error;
+    if (error) throw error;
+    profile = data as ProfileRow;
+  }
 
-  await ensureDefaultWorkspace(supabase, data as ProfileRow);
-  return data as ProfileRow;
+  if (!profile) {
+    throw new Error('Cannot resolve studio profile.');
+  }
+
+  if (!ensuredWorkspaceUsers.has(user.id)) {
+    await ensureDefaultWorkspace(supabase, profile);
+    ensuredWorkspaceUsers.add(user.id);
+  }
+
+  return profile;
 }
 
 async function resolveInitialRole(supabase: AdminClient, email: string): Promise<StudioUserRole> {
@@ -775,14 +866,23 @@ async function getProjectRow(supabase: AdminClient, projectId: string) {
 }
 
 async function ensureBucket(supabase: AdminClient) {
-  const { data } = await supabase.storage.getBucket(BUCKET);
-  if (data) return;
+  if (!bucketReadyPromise) {
+    bucketReadyPromise = (async () => {
+      const { data } = await supabase.storage.getBucket(BUCKET);
+      if (data) return;
 
-  const { error } = await supabase.storage.createBucket(BUCKET, {
-    public: false,
-    fileSizeLimit: 25 * 1024 * 1024,
-  });
-  if (error && !/already exists/i.test(error.message)) throw error;
+      const { error } = await supabase.storage.createBucket(BUCKET, {
+        public: false,
+        fileSizeLimit: 25 * 1024 * 1024,
+      });
+      if (error && !/already exists/i.test(error.message)) throw error;
+    })().catch((error) => {
+      bucketReadyPromise = null;
+      throw error;
+    });
+  }
+
+  await bucketReadyPromise;
 }
 
 async function uploadDataUrl(supabase: AdminClient, path: string, dataUrl: string) {
@@ -814,6 +914,9 @@ async function removeProjectAssets(supabase: AdminClient, project: ProjectRow) {
 function collectProjectStoragePaths(project: ProjectRow) {
   const paths = new Set<string>();
   if (project.source_image_path) paths.add(project.source_image_path);
+  for (const reference of readStoredReferenceImages(project.settings)) {
+    if (reference.path) paths.add(reference.path);
+  }
 
   if (Array.isArray(project.variants)) {
     for (const variant of project.variants as Array<Record<string, unknown>>) {
@@ -893,6 +996,56 @@ function maxTimestamp(current?: string | null, next?: string | null) {
   if (!current) return next || '';
   if (!next) return current;
   return current > next ? current : next;
+}
+
+function stripProjectStorageMeta(settings: Record<string, unknown>) {
+  const next = { ...settings };
+  delete next[PROJECT_STORAGE_META_KEY];
+  return next;
+}
+
+function readStoredReferenceImages(settings: unknown): StoredReferenceImageMeta[] {
+  if (!isRecord(settings)) return [];
+  const storageMeta = settings[PROJECT_STORAGE_META_KEY];
+  if (!isRecord(storageMeta) || !Array.isArray(storageMeta.references)) return [];
+  return storageMeta.references
+    .map((reference, index) => normalizeStoredReferenceImage(reference, index))
+    .filter((reference): reference is StoredReferenceImageMeta => Boolean(reference));
+}
+
+function normalizeStoredReferenceImage(value: unknown, index: number): StoredReferenceImageMeta | null {
+  if (!isRecord(value)) return null;
+  const path = typeof value.path === 'string' ? value.path : '';
+  if (!path) return null;
+  return {
+    id: typeof value.id === 'string' && value.id ? value.id : `reference-${index + 1}`,
+    name: typeof value.name === 'string' && value.name ? value.name : `Reference ${index + 1}`,
+    path,
+    width: Number(value.width) || 0,
+    height: Number(value.height) || 0,
+    createdAt: Number(value.createdAt) || Date.now(),
+  };
+}
+
+function withStoredReferenceImages(settings: Record<string, unknown>, references: StoredReferenceImageMeta[]) {
+  const cleaned = stripProjectStorageMeta(settings);
+  const storedReferences = references
+    .filter((reference) => Boolean(reference.path))
+    .map((reference) => ({
+      id: reference.id,
+      name: reference.name,
+      path: reference.path,
+      width: reference.width,
+      height: reference.height,
+      createdAt: reference.createdAt,
+    }));
+  if (!storedReferences.length) return cleaned;
+  return {
+    ...cleaned,
+    [PROJECT_STORAGE_META_KEY]: {
+      references: storedReferences,
+    },
+  };
 }
 
 function isUniqueViolation(error: { code?: string | null; message?: string | null }) {
